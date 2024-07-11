@@ -1,0 +1,51 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Update="Components\FileOperations.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Controls\ListViewVista.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Controls\ShellTreeView.cs" />
+    <Compile Update="Controls\TreeViewVista.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Forms\DlgInputLine.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Forms\FormDialogBase.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Forms\FormDialogList.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="Forms\FormExceptionHandler.cs">
+      <SubType>Form</SubType>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Forms\FormDialogBase.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Forms\FormDialogBase.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Forms\FormDialogList.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Forms\FormDialogList.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

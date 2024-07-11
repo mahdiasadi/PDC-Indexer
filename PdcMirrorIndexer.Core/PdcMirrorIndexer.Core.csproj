@@ -1,0 +1,174 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="License.txt" />
+    <None Remove="Resources\MainIcon.ico" />
+    <None Remove="unrar.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="License.txt" />
+    <Content Include="Resources\MainIcon.ico" />
+    <Content Include="unrar.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Igorary.Forms.Core\Igorary.Forms.Core.csproj" />
+    <ProjectReference Include="..\PdcMirror.Importer.Core\PdcMirror.Importer.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Components\FilesSearchCriteriaPanel.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Update="Components\ListViewVista.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Components\LogicalFoldersTreeView.cs" />
+    <Compile Update="Components\TreeViewVista.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="DlgAbout.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgDiscProperties.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgEditLogicalFolder.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgFileProperties.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgFolderProperties.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgItemProperties.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgProgress.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgReadingProgress.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgReadingThreadProgress.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgReadVolume.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgSelectDrive.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="DlgSelectLogicalFolder.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="FrmMain.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="RenderedToolStrip.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Resources.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <Compile Update="ShowFull.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Update="UcItemFolderClassification.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Components\FilesSearchCriteriaPanel.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Components\LogicalFoldersTreeView.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgAbout.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgAbout.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgDiscProperties.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgDiscProperties.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgEditLogicalFolder.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgEditLogicalFolder.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgFileProperties.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgFolderProperties.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgItemProperties.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgItemProperties.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgProgress.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgReadingProgress.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgReadVolume.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgSelectDrive.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgSelectDrive.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="DlgSelectLogicalFolder.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="FrmMain.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="FrmMain.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Resources.pl.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Update="Resources.resx">
+      <SubType>Designer</SubType>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+      <Generator>ResXFileCodeGenerator</Generator>
+    </EmbeddedResource>
+    <EmbeddedResource Update="UcItemFolderClassification.resx">
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
