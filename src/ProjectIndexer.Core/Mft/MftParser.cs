@@ -1,4 +1,8 @@
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
@@ -6,25 +10,50 @@ using ProjectIndexer.Core.Native;
 
 namespace ProjectIndexer.Core.Mft;
 
-internal class MftParser : IDisposable
+internal sealed class MftParser : IDisposable
 {
+    private const uint FileSignature = 0x454C4946; // FILE
+    private const uint EndMarker = 0xFFFFFFFF;
+
+    // Tune this depending on SSD/NVMe.
+    // 64MB is usually a good compromise between RAM and throughput.
+    private const int ChunkSize = 64 * 1024 * 1024;
+
+    // Progress reporting is intentionally infrequent.
+    private const int ProgressInterval = 100_000;
+
     private readonly char _driveLetter;
+
     private SafeFileHandle? _driveHandle;
     private BootSector? _bootSector;
     private bool _disposed;
-    private byte[]? _readBuffer;
-    private byte[]? _resultBuffer;
+
+    private readonly int _parallelism;
 
     public char DriveLetter => _driveLetter;
+
     internal Action<FileEntry>? EntryParsed { get; set; }
 
     public MftParser(char driveLetter)
+        : this(driveLetter, Environment.ProcessorCount)
     {
-        _driveLetter = char.ToUpperInvariant(driveLetter);
     }
 
-    public IEnumerable<FileEntry> ParseAll(IProgress<IndexProgress>? progress = null)
+    public MftParser(char driveLetter, int parallelism)
     {
+        _driveLetter = char.ToUpperInvariant(driveLetter);
+
+        _parallelism = Math.Clamp(
+            parallelism,
+            1,
+            Environment.ProcessorCount);
+    }
+
+    public IEnumerable<FileEntry> ParseAll(
+        IProgress<IndexProgress>? progress = null)
+    {
+        ThrowIfDisposed();
+
         var progressInfo = new IndexProgress
         {
             DriveLetter = _driveLetter.ToString(),
@@ -34,436 +63,1439 @@ internal class MftParser : IDisposable
         try
         {
             OpenDrive();
+
+            // ---------------------------------------------------------
+            // BOOT SECTOR
+            // ---------------------------------------------------------
+
             progressInfo.Stage = IndexStage.ReadingBootSector;
             progress?.Report(progressInfo);
 
-            var bootSectorData = ReadBytes(0, NtfsConstants.BootSectorSize);
-            _bootSector = BootSector.Parse(bootSectorData);
+            byte[] bootSectorBuffer = ArrayPool<byte>.Shared.Rent(
+                NtfsConstants.BootSectorSize);
+
+            try
+            {
+                ReadExact(
+                    0,
+                    bootSectorBuffer,
+                    NtfsConstants.BootSectorSize);
+                _bootSector = BootSector.Parse(
+    bootSectorBuffer.AsSpan(0, NtfsConstants.BootSectorSize).ToArray());
+                //_bootSector = BootSector.Parse(
+                //    bootSectorBuffer.AsSpan(
+                //        0,
+                //        NtfsConstants.BootSectorSize));
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(bootSectorBuffer);
+            }
+
+            // ---------------------------------------------------------
+            // MFT RECORD 0
+            // ---------------------------------------------------------
 
             progressInfo.Stage = IndexStage.ReadingMft;
             progress?.Report(progressInfo);
 
-            var (mftRecord0, mftDataRuns) = ReadMftRecord0WithRuns();
+            var (record0Data, mftRuns) =
+                ReadMftRecord0WithRuns();
 
-            long totalMftSize = 0;
-            foreach (var (lcn, count) in mftDataRuns)
-                if (lcn != 0) totalMftSize += count * _bootSector.BytesPerCluster;
-
-            totalMftSize = Math.Max(totalMftSize, (long)mftRecord0.Length);
-            int mftRecordSize = _bootSector.MftRecordSize;
-            long totalRecords = totalMftSize / mftRecordSize;
-            progressInfo.TotalRecords = totalRecords;
-            progressInfo.Stage = IndexStage.ParsingRecords;
-            progress?.Report(progressInfo);
-
-            int estimatedEntries = (int)(totalMftSize / (mftRecordSize * 2));
-            var entries = new List<FileEntry>(Math.Max(estimatedEntries, 10000));
-            long globalRecordIndex = 0;
-            int fileCount = 0, dirCount = 0;
-
-            foreach (var (lcn, clusterCount) in mftDataRuns)
+            try
             {
-                if (lcn == 0)
+                int recordSize = _bootSector.MftRecordSize;
+                int bytesPerCluster = _bootSector.BytesPerCluster;
+
+                long totalMftBytes = 0;
+
+                foreach (var run in mftRuns)
                 {
-                    globalRecordIndex += clusterCount * _bootSector.BytesPerCluster / mftRecordSize;
-                    continue;
+                    if (run.Lcn > 0)
+                    {
+                        totalMftBytes += checked(
+                            run.ClusterCount * bytesPerCluster);
+                    }
                 }
 
-                long volumeOffset = lcn * _bootSector.BytesPerCluster;
-                long clusterBytes = clusterCount * _bootSector.BytesPerCluster;
-                int chunkSize = (int)Math.Min(clusterBytes, 64 * 1024 * 1024);
-                long chunkOffset = 0;
+                totalMftBytes = Math.Max(
+                    totalMftBytes,
+                    record0Data.Length);
 
-                while (chunkOffset < clusterBytes)
+                long totalRecords =
+                    totalMftBytes / recordSize;
+
+                progressInfo.TotalRecords = totalRecords;
+                progressInfo.Stage = IndexStage.ParsingRecords;
+                progress?.Report(progressInfo);
+
+                // -----------------------------------------------------
+                // ENTRY STORAGE
+                // -----------------------------------------------------
+
+                int estimatedEntries = EstimateEntryCapacity(
+                    totalRecords);
+
+                var entries = new List<FileEntry>(
+                    estimatedEntries);
+
+                long globalRecordIndex = 0;
+
+                int fileCount = 0;
+                int dirCount = 0;
+
+                // -----------------------------------------------------
+                // MFT RUNS
+                // -----------------------------------------------------
+
+                foreach (var (lcn, clusterCount) in mftRuns)
                 {
-                    int readSize = (int)Math.Min(chunkSize, clusterBytes - chunkOffset);
-                    byte[] chunkData = ReadBytes(volumeOffset + chunkOffset, readSize);
-                    int recordsInChunk = readSize / mftRecordSize;
+                    long recordsInRun =
+                        checked(
+                            clusterCount *
+                            (long)bytesPerCluster /
+                            recordSize);
 
-                    for (int r = 0; r < recordsInChunk; r++)
+                    if (lcn == 0)
                     {
-                        int offset = r * mftRecordSize;
-                        var recordSpan = new Span<byte>(chunkData, offset, mftRecordSize);
-                        uint sig = BitConverter.ToUInt32(recordSpan);
-                        if (sig != 0x454C4946) { globalRecordIndex++; continue; }
-
-                        var header = MftRecordHeader.Parse(recordSpan, (int)globalRecordIndex);
-                        MftRecordHeader.ApplyFixups(recordSpan, header.FixupOffset, header.FixupCount, _bootSector.BytesPerSector);
-
-                        if (!header.IsInUse || header.HasBaseRecord)
-                        {
-                            progressInfo.ParsedRecords = ++globalRecordIndex;
-                            if (globalRecordIndex % 5000 == 0) progress?.Report(progressInfo);
-                            continue;
-                        }
-
-                        int idx = (int)globalRecordIndex;
-                        globalRecordIndex++;
-
-                        ParseRecordAttributes(recordSpan[header.AttributeOffset..], header, out var fileNameAttr, out var siAttr);
-
-                        if (fileNameAttr != null)
-                        {
-                            var entry = CreateFileEntry(idx, header, fileNameAttr.Value, siAttr);
-                            entries.Add(entry);
-                            if (entry.IsDirectory) dirCount++; else fileCount++;
-                        }
-
-                        progressInfo.ParsedRecords = idx + 1;
-                        progressInfo.FilesFound = fileCount;
-                        progressInfo.DirectoriesFound = dirCount;
-                        if (idx % 5000 == 0) progress?.Report(progressInfo);
+                        globalRecordIndex += recordsInRun;
+                        continue;
                     }
 
-                    chunkOffset += readSize;
+                    long runBytes =
+                        checked(
+                            clusterCount *
+                            (long)bytesPerCluster);
+
+                    long runOffset =
+                        checked(
+                            lcn *
+                            (long)bytesPerCluster);
+
+                    long chunkOffset = 0;
+
+                    while (chunkOffset < runBytes)
+                    {
+                        int readSize = (int)Math.Min(
+                            ChunkSize,
+                            runBytes - chunkOffset);
+
+                        // Always process a whole number of records.
+                        readSize -= readSize % recordSize;
+
+                        if (readSize <= 0)
+                            break;
+
+                        byte[] buffer =
+                            ArrayPool<byte>.Shared.Rent(readSize);
+
+                        try
+                        {
+                            ReadExact(
+                                checked(runOffset + chunkOffset),
+                                buffer,
+                                readSize);
+
+                            int recordCount =
+                                readSize / recordSize;
+
+                            long chunkRecordStart =
+                                globalRecordIndex;
+
+                            // Per-thread result lists.
+                            var localResults =
+                                new ConcurrentBag<List<FileEntry>>();
+
+                            ParallelOptions options =
+                                new()
+                                {
+                                    MaxDegreeOfParallelism =
+                                        _parallelism
+                                };
+
+                            Parallel.For(
+                                0,
+                                _parallelism,
+                                options,
+                                workerId =>
+                                {
+                                    int start =
+                                        recordCount *
+                                        workerId /
+                                        _parallelism;
+
+                                    int end =
+                                        recordCount *
+                                        (workerId + 1) /
+                                        _parallelism;
+
+                                    if (start >= end)
+                                        return;
+
+                                    var localEntries =
+                                        new List<FileEntry>(
+                                            Math.Max(
+                                                256,
+                                                (end - start) / 4));
+
+                                    for (int r = start;
+                                         r < end;
+                                         r++)
+                                    {
+                                        long recordIndex =
+                                            chunkRecordStart + r;
+
+                                        int offset =
+                                            r * recordSize;
+
+                                        Span<byte> record =
+                                            buffer.AsSpan(
+                                                offset,
+                                                recordSize);
+
+                                        // Fast signature check.
+                                        if (ReadUInt32(record) !=
+                                            FileSignature)
+                                        {
+                                            continue;
+                                        }
+
+                                        // NTFS record index is Int32
+                                        // in the current FileEntry model.
+                                        if (recordIndex >
+                                            int.MaxValue)
+                                        {
+                                            continue;
+                                        }
+
+                                        var header =
+                                            MftRecordHeader.Parse(
+                                                record,
+                                                (int)recordIndex);
+
+                                        MftRecordHeader.ApplyFixups(
+                                            record,
+                                            header.FixupOffset,
+                                            header.FixupCount,
+                                            bytesPerCluster >=
+                                                _bootSector.BytesPerSector
+                                                ? _bootSector.BytesPerSector
+                                                : _bootSector.BytesPerSector);
+
+                                        if (!header.IsInUse ||
+                                            header.HasBaseRecord)
+                                        {
+                                            continue;
+                                        }
+
+                                        if (header.AttributeOffset >=
+                                            record.Length)
+                                        {
+                                            continue;
+                                        }
+
+                                        ParseRecordAttributes(
+                                            record[
+                                                header.AttributeOffset..],
+                                            header,
+                                            out var fileNameAttr,
+                                            out var siAttr);
+
+                                        if (!fileNameAttr.HasValue)
+                                            continue;
+
+                                        var entry =
+                                            CreateFileEntry(
+                                                (int)recordIndex,
+                                                header,
+                                                fileNameAttr.Value,
+                                                siAttr);
+
+                                        localEntries.Add(entry);
+                                    }
+
+                                    if (localEntries.Count > 0)
+                                        localResults.Add(
+                                            localEntries);
+                                });
+
+                            // Merge thread-local lists.
+                            foreach (var local in localResults)
+                            {
+                                entries.AddRange(local);
+
+                                for (int i = 0;
+                                     i < local.Count;
+                                     i++)
+                                {
+                                    if (local[i].IsDirectory)
+                                        dirCount++;
+                                    else
+                                        fileCount++;
+                                }
+                            }
+
+                            globalRecordIndex += recordCount;
+
+                            progressInfo.ParsedRecords =
+                                globalRecordIndex;
+
+                            progressInfo.FilesFound =
+                                fileCount;
+
+                            progressInfo.DirectoriesFound =
+                                dirCount;
+
+                            if (globalRecordIndex %
+                                ProgressInterval <
+                                recordCount)
+                            {
+                                progress?.Report(progressInfo);
+                            }
+                        }
+                        finally
+                        {
+                            ArrayPool<byte>.Shared.Return(buffer);
+                        }
+
+                        chunkOffset += readSize;
+                    }
                 }
+
+                // -----------------------------------------------------
+                // PATH RECONSTRUCTION
+                // -----------------------------------------------------
+
+                progressInfo.Stage =
+                    IndexStage.ReconstructingPaths;
+
+                progress?.Report(progressInfo);
+
+                ReconstructPaths(
+                    entries,
+                    progressInfo,
+                    progress);
+
+                // -----------------------------------------------------
+                // COMPLETE
+                // -----------------------------------------------------
+
+                progressInfo.Stage =
+                    IndexStage.Completed;
+
+                progressInfo.TotalRecords =
+                    totalRecords;
+
+                progressInfo.ParsedRecords =
+                    totalRecords;
+
+                progressInfo.FilesFound =
+                    fileCount;
+
+                progressInfo.DirectoriesFound =
+                    dirCount;
+
+                progress?.Report(progressInfo);
+
+                return entries;
             }
-
-            progressInfo.Stage = IndexStage.ReconstructingPaths;
-            progress?.Report(progressInfo);
-
-            var childMap = new Dictionary<ulong, List<FileEntry>>(entries.Count);
-            foreach (var entry in entries)
+            finally
             {
-                entry.DriveLetter = _driveLetter;
-                if (!childMap.TryGetValue(entry.ParentFrn, out var list))
-                    childMap[entry.ParentFrn] = list = [];
-                list.Add(entry);
+                // Nothing currently owns record0Data
+                // after ParseDataRunsForMft.
             }
-
-            var rootDir = $"{_driveLetter}:\\";
-            var bfsQueue = new Queue<(FileEntry Entry, string ParentPath)>();
-            int bfsCount = 0;
-
-            if (childMap.TryGetValue(NtfsConstants.RootDirectoryFrn, out var rootChildren))
-            {
-                foreach (var child in rootChildren)
-                    bfsQueue.Enqueue((child, rootDir));
-            }
-
-            while (bfsQueue.Count > 0)
-            {
-                var (entry, parentPath) = bfsQueue.Dequeue();
-                entry.FullPath = string.Concat(parentPath, entry.Name);
-                if (entry.IsDirectory)
-                    entry.FullPath = string.Concat(entry.FullPath, "\\");
-                EntryParsed?.Invoke(entry);
-                bfsCount++;
-
-                if (entry.IsDirectory && childMap.TryGetValue(entry.Frn, out var children))
-                {
-                    string childBase = entry.FullPath;
-                    foreach (var child in children)
-                        bfsQueue.Enqueue((child, childBase));
-                }
-
-                if (bfsCount % 10000 == 0)
-                {
-                    progressInfo.FilesFound = bfsCount;
-                    progress?.Report(progressInfo);
-                }
-            }
-
-            // Fallback: assign paths to any entries not reached by BFS (orphaned entries)
-            string unknownDir = $"{_driveLetter}:\\$Unknown\\";
-            foreach (var entry in entries)
-            {
-                if (string.IsNullOrEmpty(entry.FullPath))
-                {
-                    entry.FullPath = string.Concat(unknownDir, entry.Name);
-                    if (entry.IsDirectory)
-                        entry.FullPath = string.Concat(entry.FullPath, "\\");
-                    EntryParsed?.Invoke(entry);
-                }
-            }
-
-            progressInfo.Stage = IndexStage.Completed;
-            progress?.Report(progressInfo);
-
-            return entries;
         }
         catch (Exception ex)
         {
-            progressInfo.Stage = IndexStage.Failed;
+            progressInfo.Stage =
+                IndexStage.Failed;
+
             progress?.Report(progressInfo);
-            throw new InvalidOperationException($"Failed to parse MFT on drive {_driveLetter}: {ex.Message}", ex);
+
+            throw new InvalidOperationException(
+                $"Failed to parse MFT on drive {_driveLetter}: " +
+                ex.Message,
+                ex);
         }
     }
+
+    // ================================================================
+    // PATH RECONSTRUCTION
+    // ================================================================
+
+    private void ReconstructPaths(
+        List<FileEntry> entries,
+        IndexProgress progressInfo,
+        IProgress<IndexProgress>? progress)
+    {
+        int count = entries.Count;
+
+        if (count == 0)
+            return;
+
+        var frnToIndex =
+            new Dictionary<ulong, int>(
+                count,
+                EqualityComparer<ulong>.Default);
+
+        var parentFrns =
+            new ulong[count];
+
+        var firstChild =
+            new int[count];
+
+        var nextSibling =
+            new int[count];
+
+        var fullPaths =
+            new string?[count];
+
+        Array.Fill(firstChild, -1);
+        Array.Fill(nextSibling, -1);
+
+        // -------------------------------------------------------------
+        // BUILD FRN INDEX
+        // -------------------------------------------------------------
+
+        for (int i = 0; i < count; i++)
+        {
+            var entry = entries[i];
+
+            frnToIndex[entry.Frn] = i;
+
+            parentFrns[i] =
+                entry.ParentFrn;
+
+            entry.DriveLetter =
+                _driveLetter;
+        }
+
+        // -------------------------------------------------------------
+        // BUILD PARENT -> CHILD LINKED LIST
+        //
+        // Instead of:
+        //
+        // List<List<int>>
+        //
+        // we use:
+        //
+        // firstChild[parent]
+        // nextSibling[child]
+        //
+        // Much lower memory usage.
+        // -------------------------------------------------------------
+
+        for (int i = 0; i < count; i++)
+        {
+            ulong parentFrn =
+                parentFrns[i];
+
+            if (!frnToIndex.TryGetValue(
+                    parentFrn,
+                    out int parentIndex))
+            {
+                continue;
+            }
+
+            // Protect against a record whose parent is itself.
+            if (parentIndex == i)
+                continue;
+
+            nextSibling[i] =
+                firstChild[parentIndex];
+
+            firstChild[parentIndex] =
+                i;
+        }
+
+        string root =
+            $"{_driveLetter}:\\";
+
+        // -------------------------------------------------------------
+        // ROOT
+        // -------------------------------------------------------------
+
+        int rootIndex = -1;
+
+        if (frnToIndex.TryGetValue(
+                NtfsConstants.RootDirectoryFrn,
+                out rootIndex) &&
+            rootIndex >= 0 &&
+            rootIndex < count)
+        {
+            fullPaths[rootIndex] =
+                root;
+        }
+        else
+        {
+            rootIndex = -1;
+        }
+
+        // -------------------------------------------------------------
+        // ITERATIVE PATH RESOLUTION (DFS)
+        //
+        // Every node's path is set at the exact moment it is pushed,
+        // so a popped node always has a non-null path. The
+        // 'fullPaths[child] == null' check doubles as a cycle guard:
+        // no node is ever visited or enqueued more than once, which
+        // keeps this strictly O(n) even when the on-disk tree contains
+        // self-references or circular parent chains.
+        // -------------------------------------------------------------
+
+        var stack =
+            new Stack<int>(
+                Math.Min(count, 8192));
+
+        if (rootIndex >= 0)
+        {
+            int child =
+                firstChild[rootIndex];
+
+            while (child >= 0)
+            {
+                fullPaths[child] =
+                    BuildChildPath(
+                        root,
+                        entries[child]);
+
+                stack.Push(child);
+
+                child =
+                    nextSibling[child];
+            }
+        }
+        else
+        {
+            // Fallback for unusual/corrupt MFT layouts.
+            for (int i = 0; i < count; i++)
+            {
+                if (parentFrns[i] == 0)
+                {
+                    fullPaths[i] =
+                        BuildChildPath(
+                            root,
+                            entries[i]);
+
+                    stack.Push(i);
+                }
+            }
+        }
+
+        int processed = 0;
+
+        while (stack.Count > 0)
+        {
+            int index =
+                stack.Pop();
+
+            string parentPath =
+                fullPaths[index]!;
+
+            int child =
+                firstChild[index];
+
+            while (child >= 0)
+            {
+                if (fullPaths[child] == null)
+                {
+                    fullPaths[child] =
+                        BuildChildPath(
+                            parentPath,
+                            entries[child]);
+
+                    stack.Push(child);
+                }
+
+                child =
+                    nextSibling[child];
+            }
+
+            processed++;
+
+            if (processed %
+                ProgressInterval == 0)
+            {
+                progressInfo.TotalRecords =
+                    count;
+
+                progressInfo.ParsedRecords =
+                    processed;
+
+                progressInfo.FilesFound =
+                    processed;
+
+                progress?.Report(
+                    progressInfo);
+            }
+        }
+
+        // -------------------------------------------------------------
+        // UNKNOWN ENTRIES
+        // -------------------------------------------------------------
+
+        string unknown =
+            $"{_driveLetter}:\\$Unknown\\";
+
+        for (int i = 0; i < count; i++)
+        {
+            string path =
+                fullPaths[i]
+                ?? BuildUnknownPath(
+                    unknown,
+                    entries[i]);
+
+            entries[i].FullPath =
+                path;
+        }
+
+        // -------------------------------------------------------------
+        // CALLBACK
+        //
+        // Keep callback outside the parallel parsing stage.
+        // This preserves the original behavior and avoids requiring
+        // EntryParsed to be thread-safe.
+        // -------------------------------------------------------------
+
+        var callback =
+            EntryParsed;
+
+        if (callback != null)
+        {
+            for (int i = 0; i < count; i++)
+                callback(entries[i]);
+        }
+
+        progressInfo.TotalRecords =
+            count;
+
+        progressInfo.ParsedRecords =
+            count;
+
+        progressInfo.FilesFound =
+            count;
+
+        progress?.Report(progressInfo);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string BuildChildPath(
+        string parentPath,
+        FileEntry entry)
+    {
+        string path =
+            parentPath.EndsWith(
+                "\\",
+                StringComparison.Ordinal)
+                ? parentPath + entry.Name
+                : parentPath + "\\" + entry.Name;
+
+        if (entry.IsDirectory &&
+            !path.EndsWith(
+                "\\",
+                StringComparison.Ordinal))
+        {
+            path += "\\";
+        }
+
+        return path;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string BuildUnknownPath(
+        string unknownDirectory,
+        FileEntry entry)
+    {
+        return entry.IsDirectory
+            ? unknownDirectory + entry.Name + "\\"
+            : unknownDirectory + entry.Name;
+    }
+
+    // ================================================================
+    // DRIVE
+    // ================================================================
 
     private void OpenDrive()
     {
-        string drivePath = $@"\\.\{_driveLetter}:";
-        _driveHandle = Win32Native.CreateFile(
-            drivePath,
-            Win32Native.GENERIC_READ,
-            Win32Native.FILE_SHARE_READ | Win32Native.FILE_SHARE_WRITE,
-            IntPtr.Zero,
-            Win32Native.OPEN_EXISTING,
-            Win32Native.FILE_FLAG_RANDOM_ACCESS,
-            IntPtr.Zero);
+        string drivePath =
+            $@"\\.\{_driveLetter}:";
+
+        _driveHandle =
+            Win32Native.CreateFile(
+                drivePath,
+                Win32Native.GENERIC_READ,
+                Win32Native.FILE_SHARE_READ |
+                Win32Native.FILE_SHARE_WRITE,
+                IntPtr.Zero,
+                Win32Native.OPEN_EXISTING,
+                0x08000000,
+                IntPtr.Zero);
 
         if (_driveHandle.IsInvalid)
         {
-            int error = Marshal.GetLastWin32Error();
-            string message = error switch
-            {
-                5 => $"Access denied. Administrator privileges required to read drive {_driveLetter}.",
-                2 => $"Drive {_driveLetter} not found.",
-                _ => $"Failed to open drive {_driveLetter}. Error code: {error}",
-            };
-            throw new UnauthorizedAccessException(message);
+            int error =
+                Marshal.GetLastWin32Error();
+
+            string message =
+                error switch
+                {
+                    5 =>
+                        $"Access denied. Administrator privileges required " +
+                        $"to read drive {_driveLetter}.",
+
+                    2 =>
+                        $"Drive {_driveLetter} not found.",
+
+                    _ =>
+                        $"Failed to open drive {_driveLetter}. " +
+                        $"Error code: {error}"
+                };
+
+            throw new UnauthorizedAccessException(
+                message);
         }
     }
 
-    private byte[] ReadBytes(long offset, int size)
+    // ================================================================
+    // RAW READ
+    // ================================================================
+
+    private void ReadExact(
+        long offset,
+        byte[] buffer,
+        int size)
     {
-        if (_driveHandle == null || _driveHandle.IsInvalid)
-            throw new InvalidOperationException("Drive handle is not open");
+        if (_driveHandle == null ||
+            _driveHandle.IsInvalid)
+        {
+            throw new InvalidOperationException(
+                "Drive handle is not open");
+        }
 
-        long alignedOffset = offset & ~(0x1FF);
-        int padding = (int)(offset - alignedOffset);
-        int readSize = (size + padding + 0x1FF) & ~0x1FF;
+        if (size <= 0)
+            return;
 
-        if (_readBuffer == null || _readBuffer.Length < readSize)
-            _readBuffer = new byte[readSize];
-        if (_resultBuffer == null || _resultBuffer.Length < size)
-            _resultBuffer = new byte[size];
+        long alignedOffset =
+            offset & ~511L;
 
-        if (!Win32Native.SetFilePointerEx(_driveHandle, alignedOffset, out _, Win32Native.FILE_BEGIN))
-            throw new InvalidOperationException("Failed to set file pointer");
+        int padding =
+            checked((int)(offset - alignedOffset));
 
-        if (!Win32Native.ReadFile(_driveHandle, _readBuffer, (uint)readSize, out uint bytesRead, IntPtr.Zero))
-            throw new InvalidOperationException($"Failed to read from drive at offset {offset}");
+        int readSize =
+            checked(
+                (size + padding + 511) &
+                ~511);
 
-        Buffer.BlockCopy(_readBuffer, padding, _resultBuffer, 0, size);
-        return _resultBuffer;
+        if (readSize > buffer.Length)
+        {
+            throw new ArgumentException(
+                "Buffer is smaller than requested read.");
+        }
+
+        if (!Win32Native.SetFilePointerEx(
+                _driveHandle,
+                alignedOffset,
+                out _,
+                Win32Native.FILE_BEGIN))
+        {
+            throw new IOException(
+                $"Failed to seek to offset {offset}.");
+        }
+
+        if (!Win32Native.ReadFile(
+                _driveHandle,
+                buffer,
+                (uint)readSize,
+                out uint bytesRead,
+                IntPtr.Zero))
+        {
+            int error =
+                Marshal.GetLastWin32Error();
+
+            throw new IOException(
+                $"Failed to read drive at offset " +
+                $"{offset}. Win32 error: {error}");
+        }
+
+        if (bytesRead < readSize)
+        {
+            throw new EndOfStreamException(
+                $"Incomplete drive read. " +
+                $"Expected {readSize}, got {bytesRead}.");
+        }
+
+        if (padding != 0)
+        {
+            Buffer.BlockCopy(
+                buffer,
+                padding,
+                buffer,
+                0,
+                size);
+        }
     }
-    private (byte[] Record0Data, IEnumerable<(long Lcn, long ClusterCount)> DataRuns) ReadMftRecord0WithRuns()
+
+    // ================================================================
+    // MFT RECORD 0
+    // ================================================================
+
+    private (
+        byte[] Record0Data,
+        List<(long Lcn, long ClusterCount)> DataRuns)
+        ReadMftRecord0WithRuns()
     {
         if (_bootSector == null)
-            throw new InvalidOperationException("Boot sector not parsed");
+            throw new InvalidOperationException(
+                "Boot sector not parsed.");
 
-        long mftOffset = _bootSector.MftByteOffset;
-        int mftRecordSize = _bootSector.MftRecordSize;
+        long mftOffset =
+            _bootSector.MftByteOffset;
 
-        int initialReadSize = Math.Max(mftRecordSize * 2, Math.Min(_bootSector.BytesPerCluster * 32, 16 * 1024 * 1024));
+        int recordSize =
+            _bootSector.MftRecordSize;
 
-        var firstChunk = ReadBytes(mftOffset, initialReadSize);
+        int initialReadSize =
+            Math.Max(
+                recordSize * 2,
+                Math.Min(
+                    _bootSector.BytesPerCluster * 32,
+                    4 * 1024 * 1024));
 
-        var record0Span = new Span<byte>(firstChunk, 0, mftRecordSize);
+        initialReadSize -=
+            initialReadSize % recordSize;
 
-        uint sig = BitConverter.ToUInt32(record0Span);
-        if (sig != 0x454C4946)
-            throw new InvalidOperationException("MFT record 0 not found at expected location");
+        byte[] buffer =
+            ArrayPool<byte>.Shared.Rent(
+                initialReadSize);
 
-        var header0 = MftRecordHeader.Parse(record0Span, 0);
-        MftRecordHeader.ApplyFixups(record0Span, header0.FixupOffset, header0.FixupCount, _bootSector.BytesPerSector);
-
-        var dataRuns = ParseDataRunsForMft(record0Span[header0.AttributeOffset..]);
-        var record0Data = firstChunk[..mftRecordSize];
-
-        return (record0Data, dataRuns);
-    }
-
-    private IEnumerable<(long Lcn, long ClusterCount)> ParseDataRunsForMft(ReadOnlySpan<byte> attributeData)
-    {
-        int pos = 0;
-        long currentLcn = 0;
-
-        while (pos + 22 <= attributeData.Length)
+        try
         {
-            uint attrType = BitConverter.ToUInt32(attributeData[pos..]);
-            if (attrType == 0xFFFFFFFF) break;
+            ReadExact(
+                mftOffset,
+                buffer,
+                initialReadSize);
 
-            uint attrLength = BitConverter.ToUInt32(attributeData[(pos + 4)..]);
-            if (attrLength == 0 || pos + attrLength > attributeData.Length) break;
+            Span<byte> record =
+                buffer.AsSpan(
+                    0,
+                    recordSize);
 
-            byte nonResident = attributeData[pos + 8];
-
-            if (attrType == (uint)AttributeType.Data)
+            if (ReadUInt32(record) !=
+                FileSignature)
             {
-                if (nonResident != 0)
-                {
-                    if (pos + 64 > attributeData.Length)
-                    {
-                        pos += (int)attrLength;
-                        continue;
-                    }
-
-                    ushort dataRunOffset = BitConverter.ToUInt16(attributeData[(pos + 0x20)..]);
-                    if (dataRunOffset == 0 || dataRunOffset >= attrLength)
-                    {
-                        pos += (int)attrLength;
-                        continue;
-                    }
-
-                    int dataRunPos = pos + dataRunOffset;
-
-                    var runs = new List<(long, long)>();
-                    while (dataRunPos + 1 <= pos + attrLength)
-                    {
-                        byte header = attributeData[dataRunPos++];
-                        int lengthBytes = header & 0x0F;
-                        int offsetBytes = header >> 4;
-
-                        if (lengthBytes == 0) break;
-
-                        if (dataRunPos + lengthBytes > pos + attrLength) break;
-                        long clusterCount = ReadVariableLengthInt(attributeData, ref dataRunPos, lengthBytes);
-
-                        if (offsetBytes > 0)
-                        {
-                            if (dataRunPos + offsetBytes > pos + attrLength) break;
-                            long lcnOffset = ReadVariableLengthSignedInt(attributeData, ref dataRunPos, offsetBytes);
-                            currentLcn += lcnOffset;
-                            runs.Add((currentLcn, clusterCount));
-                        }
-                        else
-                        {
-                            runs.Add((0, clusterCount));
-                        }
-                    }
-
-                    if (runs.Count > 0)
-                        return runs;
-                }
+                throw new InvalidOperationException(
+                    "MFT record 0 not found at expected location.");
             }
 
-            pos += (int)attrLength;
+            var header =
+                MftRecordHeader.Parse(
+                    record,
+                    0);
+
+            MftRecordHeader.ApplyFixups(
+                record,
+                header.FixupOffset,
+                header.FixupCount,
+                _bootSector.BytesPerSector);
+
+            var runs =
+                ParseDataRunsForMft(
+                    record[
+                        header.AttributeOffset..]);
+
+            // We need a standalone copy because the rented buffer
+            // is returned after this method.
+            byte[] record0 =
+                new byte[recordSize];
+
+            record.CopyTo(record0);
+
+            return (record0, runs);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(
+                buffer);
+        }
+    }
+
+    // ================================================================
+    // DATA RUNS
+    // ================================================================
+
+    private static List<(long Lcn, long ClusterCount)>
+        ParseDataRunsForMft(
+            ReadOnlySpan<byte> attributeData)
+    {
+        int pos = 0;
+
+        long currentLcn = 0;
+
+        var runs =
+            new List<(long, long)>(16);
+
+        while (pos + 8 <=
+               attributeData.Length)
+        {
+            uint attrType =
+                ReadUInt32(
+                    attributeData[pos..]);
+
+            if (attrType ==
+                EndMarker)
+            {
+                break;
+            }
+
+            uint attrLength =
+                ReadUInt32(
+                    attributeData[(pos + 4)..]);
+
+            if (attrLength < 0x18 ||
+                attrLength >
+                attributeData.Length - pos)
+            {
+                break;
+            }
+
+            int attrEnd =
+                pos + (int)attrLength;
+
+            byte nonResident =
+                attributeData[pos + 8];
+
+            if (attrType ==
+                    (uint)AttributeType.Data &&
+                nonResident != 0)
+            {
+                if (pos + 64 > attrEnd)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                ushort dataRunOffset =
+                    ReadUInt16(
+                        attributeData[
+                            (pos + 0x20)..]);
+
+                if (dataRunOffset == 0 ||
+                    dataRunOffset >= attrLength)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                int runPos =
+                    pos + dataRunOffset;
+
+                while (runPos < attrEnd)
+                {
+                    byte header =
+                        attributeData[runPos++];
+
+                    if (header == 0)
+                        break;
+
+                    int lengthBytes =
+                        header & 0x0F;
+
+                    int offsetBytes =
+                        header >> 4;
+
+                    if (lengthBytes == 0 ||
+                        runPos + lengthBytes >
+                        attrEnd)
+                    {
+                        break;
+                    }
+
+                    long clusterCount =
+                        ReadVariableLengthUInt(
+                            attributeData,
+                            ref runPos,
+                            lengthBytes);
+
+                    long lcn;
+
+                    if (offsetBytes == 0)
+                    {
+                        // Sparse run.
+                        lcn = 0;
+                    }
+                    else
+                    {
+                        if (runPos + offsetBytes >
+                            attrEnd)
+                        {
+                            break;
+                        }
+
+                        long delta =
+                            ReadVariableLengthSigned(
+                                attributeData,
+                                ref runPos,
+                                offsetBytes);
+
+                        currentLcn += delta;
+
+                        lcn = currentLcn;
+                    }
+
+                    if (clusterCount > 0)
+                    {
+                        runs.Add(
+                            (lcn, clusterCount));
+                    }
+                }
+
+                if (runs.Count > 0)
+                    return runs;
+            }
+
+            pos = attrEnd;
         }
 
         throw new InvalidOperationException(
-            "Could not find $DATA attribute in MFT record 0. The NTFS volume may have an unsupported layout.");
+            "Could not find $DATA attribute in " +
+            "MFT record 0. The NTFS volume may " +
+            "have an unsupported layout.");
     }
 
-    private static long ReadVariableLengthInt(ReadOnlySpan<byte> data, ref int pos, int bytes)
-    {
-        long result = 0;
-        for (int i = 0; i < bytes; i++)
-            result |= (long)data[pos++] << (i * 8);
-        return result;
-    }
+    // ================================================================
+    // ATTRIBUTE PARSER
+    // ================================================================
 
-    private static long ReadVariableLengthSignedInt(ReadOnlySpan<byte> data, ref int pos, int bytes)
-    {
-        long result = 0;
-        for (int i = 0; i < bytes; i++)
-            result |= (long)data[pos++] << (i * 8);
-
-        if (bytes > 0 && (result & (1L << ((bytes * 8) - 1))) != 0)
-        {
-            for (int i = bytes; i < 8; i++)
-                result |= ~0L << (bytes * 8);
-        }
-
-        return result;
-    }
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ParseRecordAttributes(
         ReadOnlySpan<byte> attrStart,
         MftRecordHeader header,
-        out (ulong ParentFrn, string Name, FileNameNamespace Namespace, long AllocatedSize, long ActualSize)? fileNameAttr,
-        out (DateTime Created, DateTime Modified, DateTime MftModified, DateTime Accessed, uint FileAttributes)? siAttr)
+        out (
+            ulong ParentFrn,
+            string Name,
+            FileNameNamespace Namespace,
+            long AllocatedSize,
+            long ActualSize)? fileNameAttr,
+        out (
+            DateTime Created,
+            DateTime Modified,
+            DateTime MftModified,
+            DateTime Accessed,
+            uint FileAttributes)? siAttr)
     {
         fileNameAttr = null;
         siAttr = null;
+
         int pos = 0;
 
-        while (pos < attrStart.Length)
+        while (pos + 8 <=
+               attrStart.Length)
         {
-            uint attrType = BitConverter.ToUInt32(attrStart[pos..]);
-            if (attrType == 0xFFFFFFFF) break;
+            uint attrType =
+                ReadUInt32(
+                    attrStart[pos..]);
 
-            uint attrLength = BitConverter.ToUInt32(attrStart[(pos + 4)..]);
-            if (attrLength == 0 || pos + attrLength > attrStart.Length) break;
-
-            byte nonResident = attrStart[pos + 8];
-
-            if (attrType == (uint)AttributeType.FileName && nonResident == 0)
+            if (attrType ==
+                EndMarker)
             {
-                ushort contentOffset = BitConverter.ToUInt16(attrStart[(pos + 0x14)..]);
-                int dataOffset = pos + contentOffset;
-
-                ulong parentFrn = BitConverter.ToUInt64(attrStart[dataOffset..]) & 0x0000FFFFFFFFFFFF;
-                long allocSize = BitConverter.ToInt64(attrStart[(dataOffset + 0x28)..]);
-                long actualSize = BitConverter.ToInt64(attrStart[(dataOffset + 0x30)..]);
-                byte nameLength = attrStart[dataOffset + 0x40];
-                byte nameNamespace = attrStart[dataOffset + 0x41];
-
-                if (nameLength > 0)
-                {
-                    string name = System.Text.Encoding.Unicode.GetString(
-                        attrStart.Slice(dataOffset + 0x42, nameLength * 2));
-
-                    fileNameAttr = (parentFrn, name, (FileNameNamespace)nameNamespace, allocSize, actualSize);
-                }
-            }
-            else if (attrType == (uint)AttributeType.StandardInformation && nonResident == 0)
-            {
-                ushort contentOffset = BitConverter.ToUInt16(attrStart[(pos + 0x14)..]);
-                int dataOffset = pos + contentOffset;
-
-                if (dataOffset + 0x48 <= attrStart.Length)
-                {
-                    long created = BitConverter.ToInt64(attrStart[dataOffset..]);
-                    long modified = BitConverter.ToInt64(attrStart[(dataOffset + 8)..]);
-                    long mftModified = BitConverter.ToInt64(attrStart[(dataOffset + 16)..]);
-                    long accessed = BitConverter.ToInt64(attrStart[(dataOffset + 24)..]);
-                    uint fileAttributes = BitConverter.ToUInt32(attrStart[(dataOffset + 32)..]);
-
-                    siAttr = (
-                        DateTime.FromFileTimeUtc(created),
-                        DateTime.FromFileTimeUtc(modified),
-                        DateTime.FromFileTimeUtc(mftModified),
-                        DateTime.FromFileTimeUtc(accessed),
-                        fileAttributes);
-                }
+                break;
             }
 
-            pos += (int)attrLength;
+            uint attrLength =
+                ReadUInt32(
+                    attrStart[(pos + 4)..]);
+
+            if (attrLength < 0x18 ||
+                attrLength >
+                attrStart.Length - pos)
+            {
+                break;
+            }
+
+            int attrEnd =
+                pos + (int)attrLength;
+
+            if (pos + 9 > attrEnd)
+                break;
+
+            byte nonResident =
+                attrStart[pos + 8];
+
+            if (attrType ==
+                    (uint)AttributeType.FileName &&
+                nonResident == 0)
+            {
+                if (pos + 0x16 > attrEnd)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                ushort contentOffset =
+                    ReadUInt16(
+                        attrStart[
+                            (pos + 0x14)..]);
+
+                int dataOffset =
+                    pos + contentOffset;
+
+                if (dataOffset < pos ||
+                    dataOffset + 0x42 >
+                    attrEnd)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                ulong parentFrn =
+                    ReadUInt64(
+                        attrStart[
+                            dataOffset..])
+                    & 0x0000FFFFFFFFFFFFUL;
+
+                long allocatedSize =
+                    ReadInt64(
+                        attrStart[
+                            (dataOffset + 0x28)..]);
+
+                long actualSize =
+                    ReadInt64(
+                        attrStart[
+                            (dataOffset + 0x30)..]);
+
+                byte nameLength =
+                    attrStart[
+                        dataOffset + 0x40];
+
+                byte nameNamespace =
+                    attrStart[
+                        dataOffset + 0x41];
+
+                int nameBytes =
+                    nameLength * 2;
+
+                int nameOffset =
+                    dataOffset + 0x42;
+
+                if (nameLength > 0 &&
+                    nameOffset + nameBytes <=
+                    attrEnd)
+                {
+                    string name =
+                        Encoding.Unicode.GetString(
+                            attrStart.Slice(
+                                nameOffset,
+                                nameBytes));
+
+                    fileNameAttr =
+                        (
+                            parentFrn,
+                            name,
+                            (FileNameNamespace)
+                                nameNamespace,
+                            allocatedSize,
+                            actualSize
+                        );
+                }
+            }
+            else if (
+                attrType ==
+                (uint)AttributeType.StandardInformation &&
+                nonResident == 0)
+            {
+                if (pos + 0x16 > attrEnd)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                ushort contentOffset =
+                    ReadUInt16(
+                        attrStart[
+                            (pos + 0x14)..]);
+
+                int dataOffset =
+                    pos + contentOffset;
+
+                if (dataOffset < pos ||
+                    dataOffset + 0x24 >
+                    attrEnd)
+                {
+                    pos = attrEnd;
+                    continue;
+                }
+
+                long created =
+                    ReadInt64(
+                        attrStart[
+                            dataOffset..]);
+
+                long modified =
+                    ReadInt64(
+                        attrStart[
+                            (dataOffset + 8)..]);
+
+                long mftModified =
+                    ReadInt64(
+                        attrStart[
+                            (dataOffset + 16)..]);
+
+                long accessed =
+                    ReadInt64(
+                        attrStart[
+                            (dataOffset + 24)..]);
+
+                uint fileAttributes =
+                    ReadUInt32(
+                        attrStart[
+                            (dataOffset + 32)..]);
+
+                siAttr =
+                    (
+                        DateTime.FromFileTimeUtc(
+                            created),
+
+                        DateTime.FromFileTimeUtc(
+                            modified),
+
+                        DateTime.FromFileTimeUtc(
+                            mftModified),
+
+                        DateTime.FromFileTimeUtc(
+                            accessed),
+
+                        fileAttributes
+                    );
+            }
+
+            pos = attrEnd;
         }
     }
 
+    // ================================================================
+    // FILE ENTRY
+    // ================================================================
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static FileEntry CreateFileEntry(
         int frn,
         MftRecordHeader header,
-        (ulong ParentFrn, string Name, FileNameNamespace Namespace, long AllocatedSize, long ActualSize) fileNameAttr,
-        (DateTime Created, DateTime Modified, DateTime MftModified, DateTime Accessed, uint FileAttributes)? siAttr)
+        (
+            ulong ParentFrn,
+            string Name,
+            FileNameNamespace Namespace,
+            long AllocatedSize,
+            long ActualSize) fileNameAttr,
+        (
+            DateTime Created,
+            DateTime Modified,
+            DateTime MftModified,
+            DateTime Accessed,
+            uint FileAttributes)? siAttr)
     {
-        var entry = new FileEntry
-        {
-            Frn = (ulong)frn,
-            Name = fileNameAttr.Name,
-            ParentFrn = fileNameAttr.ParentFrn,
-            IsDirectory = header.IsDirectory,
-            Size = Math.Max(0, fileNameAttr.ActualSize),
-            AllocatedSize = Math.Max(0, fileNameAttr.AllocatedSize),
-        };
+        var entry =
+            new FileEntry
+            {
+                Frn =
+                    (ulong)(uint)frn,
+
+                Name =
+                    fileNameAttr.Name,
+
+                ParentFrn =
+                    fileNameAttr.ParentFrn,
+
+                IsDirectory =
+                    header.IsDirectory,
+
+                Size =
+                    fileNameAttr.ActualSize > 0
+                        ? fileNameAttr.ActualSize
+                        : 0,
+
+                AllocatedSize =
+                    fileNameAttr.AllocatedSize > 0
+                        ? fileNameAttr.AllocatedSize
+                        : 0
+            };
 
         if (siAttr.HasValue)
         {
-            entry.CreationTime = siAttr.Value.Created;
-            entry.LastModifiedTime = siAttr.Value.Modified;
-            entry.MftModifiedTime = siAttr.Value.MftModified;
-            entry.LastAccessTime = siAttr.Value.Accessed;
+            var si =
+                siAttr.Value;
 
-            uint fa = siAttr.Value.FileAttributes;
-            entry.IsHidden = (fa & 0x2) != 0;
-            entry.IsSystem = (fa & 0x4) != 0;
-            entry.IsReadOnly = (fa & 0x1) != 0;
-            entry.IsArchive = (fa & 0x20) != 0;
-            entry.IsTemporary = (fa & 0x100) != 0;
+            entry.CreationTime =
+                si.Created;
+
+            entry.LastModifiedTime =
+                si.Modified;
+
+            entry.MftModifiedTime =
+                si.MftModified;
+
+            entry.LastAccessTime =
+                si.Accessed;
+
+            uint fa =
+                si.FileAttributes;
+
+            entry.IsHidden =
+                (fa & 0x2) != 0;
+
+            entry.IsSystem =
+                (fa & 0x4) != 0;
+
+            entry.IsReadOnly =
+                (fa & 0x1) != 0;
+
+            entry.IsArchive =
+                (fa & 0x20) != 0;
+
+            entry.IsTemporary =
+                (fa & 0x100) != 0;
         }
 
         return entry;
     }
 
+    // ================================================================
+    // FAST INTEGER READERS
+    // ================================================================
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ushort ReadUInt16(
+        ReadOnlySpan<byte> data)
+    {
+        return (ushort)(
+            data[0] |
+            (data[1] << 8));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ReadUInt32(
+        ReadOnlySpan<byte> data)
+    {
+        return
+            (uint)data[0] |
+            ((uint)data[1] << 8) |
+            ((uint)data[2] << 16) |
+            ((uint)data[3] << 24);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong ReadUInt64(
+        ReadOnlySpan<byte> data)
+    {
+        return
+            (ulong)data[0] |
+            ((ulong)data[1] << 8) |
+            ((ulong)data[2] << 16) |
+            ((ulong)data[3] << 24) |
+            ((ulong)data[4] << 32) |
+            ((ulong)data[5] << 40) |
+            ((ulong)data[6] << 48) |
+            ((ulong)data[7] << 56);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ReadInt64(
+        ReadOnlySpan<byte> data)
+    {
+        return unchecked(
+            (long)ReadUInt64(data));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ReadVariableLengthUInt(
+        ReadOnlySpan<byte> data,
+        ref int pos,
+        int bytes)
+    {
+        long value = 0;
+
+        for (int i = 0; i < bytes; i++)
+        {
+            value |=
+                (long)data[pos++] <<
+                (i * 8);
+        }
+
+        return value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ReadVariableLengthSigned(
+        ReadOnlySpan<byte> data,
+        ref int pos,
+        int bytes)
+    {
+        long value = 0;
+
+        for (int i = 0; i < bytes; i++)
+        {
+            value |=
+                (long)data[pos++] <<
+                (i * 8);
+        }
+
+        if (bytes > 0)
+        {
+            int bits =
+                bytes * 8;
+
+            if (bits < 64 &&
+                (value &
+                 (1L << (bits - 1))) != 0)
+            {
+                value |=
+                    -1L << bits;
+            }
+        }
+
+        return value;
+    }
+
+    // ================================================================
+    // HELPERS
+    // ================================================================
+
+    private static int EstimateEntryCapacity(
+        long totalRecords)
+    {
+        // Most MFT records are files/directories but not all.
+        // Avoid ridiculous allocations on huge volumes.
+
+        long estimate =
+            totalRecords / 2;
+
+        estimate =
+            Math.Clamp(
+                estimate,
+                10_000,
+                5_000_000);
+
+        return (int)estimate;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(
+                nameof(MftParser));
+    }
+
+    // ================================================================
+    // DISPOSE
+    // ================================================================
+
     public void Dispose()
     {
-        if (!_disposed)
-        {
-            _driveHandle?.Dispose();
-            _disposed = true;
-        }
+        if (_disposed)
+            return;
+
+        _driveHandle?.Dispose();
+        _driveHandle = null;
+
+        _disposed = true;
     }
 }

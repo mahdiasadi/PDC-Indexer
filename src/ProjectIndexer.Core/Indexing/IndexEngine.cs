@@ -15,7 +15,9 @@ public class IndexEngine
     private readonly InMemoryIndex _memoryIndex = new();
     private readonly SearchEngine _searchEngine;
     private bool _isIndexed;
+    private bool _isBuilding;
     private int _entryCountSinceLastSave;
+    private int _entryCountSinceFastIndexSave;
     private readonly string _fastIndexPath;
 
     public IFileSystemProvider Provider => _provider;
@@ -26,7 +28,8 @@ public class IndexEngine
     public int EntryCount => _fastIndex.Count;
     public Action<FileEntry>? OnEntryIndexed { get; set; }
 
-    private const int SaveBatchSize = 5000;
+    private const int SaveBatchSize = 50000;
+    private const int FastIndexSaveInterval = 1000000; // Save fast index to disk only at the end of a full build
 
     public IndexEngine(IFileSystemProvider provider, IndexDatabase? database = null, string? fastIndexPath = null)
     {
@@ -190,109 +193,150 @@ public class IndexEngine
         progressInfo.Stage = IndexStage.Starting;
         progress?.Report(progressInfo);
 
-        _fastIndex.Clear();
-        _memoryIndex.Clear();
-        _entryCountSinceLastSave = 0;
-
-        using var dbConn = _database.OpenConnection();
-        using var dbTxn = dbConn.BeginTransaction();
-
-        _database.ClearDriveIndex(dbConn, DriveLetter);
-
-        var entryBuffer = new List<FileEntry>();
-        var fastIndexBuffer = new List<FileEntry>();
-        _provider.OnEntryIndexed = entry =>
+        _isBuilding = true;
+        try
         {
-            if (folderPath != null && !entry.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
-                return;
-            
-            entryBuffer.Add(entry);
-            fastIndexBuffer.Add(entry);
-            OnEntryIndexed?.Invoke(entry);
+            _fastIndex.Clear();
+            _memoryIndex.Clear();
+            _entryCountSinceLastSave = 0;
+            _entryCountSinceFastIndexSave = 0;
 
-            _entryCountSinceLastSave++;
-            if (_entryCountSinceLastSave >= SaveBatchSize)
+            using var dbConn = _database.OpenConnection();
+            using var dbTxn = dbConn.BeginTransaction();
+
+            _database.ClearDriveIndex(dbConn, DriveLetter);
+
+            var entryBuffer = new List<FileEntry>();
+            var fastIndexBuffer = new List<FileEntry>();
+            bool providerStreamsEntries = false;
+
+            // Create a progress wrapper that forwards provider progress with our drive letter
+            var engineProgress = new Progress<IndexProgress>(p =>
+            {
+                p.DriveLetter = DriveLetter.ToString();
+                progress?.Report(p);
+            });
+
+            _provider.OnEntryIndexed = entry =>
+            {
+                if (folderPath != null && !entry.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                providerStreamsEntries = true;
+                entryBuffer.Add(entry);
+                fastIndexBuffer.Add(entry);
+                OnEntryIndexed?.Invoke(entry);
+
+                _entryCountSinceLastSave++;
+                _entryCountSinceFastIndexSave++;
+
+                if (_entryCountSinceLastSave >= SaveBatchSize)
+                {
+                    _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
+                    _fastIndex.AddRange(fastIndexBuffer);
+                    entryBuffer.Clear();
+                    fastIndexBuffer.Clear();
+                    _entryCountSinceLastSave = 0;
+                }
+
+                // Periodically persist fast index to disk (crash recovery)
+                if (_entryCountSinceFastIndexSave >= FastIndexSaveInterval)
+                {
+                    _fastIndex.Save();
+                    _entryCountSinceFastIndexSave = 0;
+                }
+            };
+
+            var entries = _provider.EnumerateFiles(engineProgress);
+            List<FileEntry> filteredEntries = folderPath != null
+                ? entries.Where(e => e.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase)).ToList()
+                : entries;
+
+            // Flush remaining buffered entries that were streamed via the callback.
+            if (fastIndexBuffer.Count > 0)
+            {
+                _fastIndex.AddRange(fastIndexBuffer);
+                fastIndexBuffer.Clear();
+            }
+
+            // If the provider did not stream entries through OnEntryIndexed
+            // (e.g. mock providers), add the returned entries once here.
+            if (!providerStreamsEntries)
+                _fastIndex.AddRange(filteredEntries);
+
+            _fastIndex.Save();
+            _memoryIndex.AddRange(filteredEntries);
+            _isIndexed = true;
+
+            _provider.OnEntryIndexed = null;
+
+            if (entryBuffer.Count > 0)
             {
                 _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
-                _fastIndex.AddRange(fastIndexBuffer);
                 entryBuffer.Clear();
-                fastIndexBuffer.Clear();
                 _entryCountSinceLastSave = 0;
             }
-        };
 
-        var entries = _provider.EnumerateFiles(progress);
-        List<FileEntry> filteredEntries;
-        if (folderPath != null)
-        {
-            filteredEntries = entries
-                .Where(e => e.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-        else
-        {
-            filteredEntries = entries;
-        }
-        
-        _fastIndex.AddRange(filteredEntries);
-        _fastIndex.Save();
-        _memoryIndex.AddRange(filteredEntries);
-        _isIndexed = true;
+            _database.SetMetadata(dbConn, $"LastIndexTime_{DriveLetter}", DateTime.UtcNow.ToString("O"));
 
-        _provider.OnEntryIndexed = null;
-
-        if (entryBuffer.Count > 0)
-        {
-            _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
-            entryBuffer.Clear();
-            _entryCountSinceLastSave = 0;
-        }
-
-        _database.SetMetadata(dbConn, $"LastIndexTime_{DriveLetter}", DateTime.UtcNow.ToString("O"));
-
-        if (_provider.SupportsJournaling && _provider is MftIndexer mft)
-        {
-            try
+            if (_provider.SupportsJournaling && _provider is MftIndexer mft)
             {
-                string volumePath = $@"\\.\{DriveLetter}:";
-                using var volHandle = Win32Native.CreateFile(
-                    volumePath,
-                    Win32Native.GENERIC_READ,
-                    Win32Native.FILE_SHARE_READ | Win32Native.FILE_SHARE_WRITE,
-                    IntPtr.Zero,
-                    Win32Native.OPEN_EXISTING,
-                    0,
-                    IntPtr.Zero);
-                if (!volHandle.IsInvalid)
+                try
                 {
-                    var jd = UsnJournal.QueryJournal(volHandle);
-                    _database.SetMetadata(dbConn, $"UsnJournalId_{DriveLetter}", jd.UsnJournalId.ToString());
-                    _database.SetMetadata(dbConn, $"UsnNextUsn_{DriveLetter}", jd.NextUsn.ToString());
+                    string volumePath = $@"\\.\{DriveLetter}:";
+                    using var volHandle = Win32Native.CreateFile(
+                        volumePath,
+                        Win32Native.GENERIC_READ,
+                        Win32Native.FILE_SHARE_READ | Win32Native.FILE_SHARE_WRITE,
+                        IntPtr.Zero,
+                        Win32Native.OPEN_EXISTING,
+                        0,
+                        IntPtr.Zero);
+                    if (!volHandle.IsInvalid)
+                    {
+                        var jd = UsnJournal.QueryJournal(volHandle);
+                        _database.SetMetadata(dbConn, $"UsnJournalId_{DriveLetter}", jd.UsnJournalId.ToString());
+                        _database.SetMetadata(dbConn, $"UsnNextUsn_{DriveLetter}", jd.NextUsn.ToString());
+                    }
                 }
+                catch { }
             }
-            catch { }
+
+            dbTxn.Commit();
+
+            progressInfo.Stage = IndexStage.Completed;
+            progressInfo.FilesFound = filteredEntries.Count(e => !e.IsDirectory);
+            progressInfo.DirectoriesFound = filteredEntries.Count(e => e.IsDirectory);
+            progress?.Report(progressInfo);
+
+            return filteredEntries;
         }
-
-        dbTxn.Commit();
-
-        progressInfo.Stage = IndexStage.Completed;
-        progressInfo.FilesFound = filteredEntries.Count(e => !e.IsDirectory);
-        progressInfo.DirectoriesFound = filteredEntries.Count(e => e.IsDirectory);
-        progress?.Report(progressInfo);
-
-        return filteredEntries;
+        finally
+        {
+            _isBuilding = false;
+        }
     }
+
+    private bool CanSearch => _isIndexed || _isBuilding;
 
     public List<FileEntry> Search(string query)
     {
-        if (!_isIndexed || string.IsNullOrEmpty(query))
-            return [];
+        if (string.IsNullOrEmpty(query)) return [];
+        if (!CanSearch) return [];
+        if (_fastIndex.IsEmpty) return [];
 
         // Use fast index for primary search, fallback to search engine for complex queries
         if (IsSimpleContainsQuery(query))
         {
             return _fastIndex.SearchByContains(query);
         }
+
+        // For multi-word queries without special operators, use OR logic on fast index
+        if (IsMultiWordSimpleQuery(query))
+        {
+            return SearchMultiWordOr(query);
+        }
+
         return _searchEngine.Execute(query);
     }
 
@@ -312,9 +356,40 @@ public class IndexEngine
         return true;
     }
 
+    private static bool IsMultiWordSimpleQuery(string query)
+    {
+        query = query.Trim();
+        if (query.StartsWith("regex:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.Contains('|')) return false;
+        if (query.StartsWith('!')) return false;
+        if (query.StartsWith('"')) return false;
+        if (query.StartsWith("size:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("modified:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("created:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("content:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("drive:", StringComparison.OrdinalIgnoreCase)) return false;
+        return query.Contains(' ');
+    }
+
+    private List<FileEntry> SearchMultiWordOr(string query)
+    {
+        var words = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var allResults = new HashSet<FileEntry>();
+
+        foreach (var word in words)
+        {
+            if (string.IsNullOrWhiteSpace(word)) continue;
+            var results = _fastIndex.SearchByContains(word);
+            foreach (var r in results)
+                allResults.Add(r);
+        }
+
+        return allResults.ToList();
+    }
+
     public List<FileEntry> SearchByPrefix(string prefix)
     {
-        if (!_isIndexed || string.IsNullOrEmpty(prefix))
+        if (!CanSearch || string.IsNullOrEmpty(prefix))
             return [];
 
         return _fastIndex.SearchByPrefix(prefix);
@@ -322,7 +397,7 @@ public class IndexEngine
 
     public List<FileEntry> SearchByWildcard(string pattern)
     {
-        if (!_isIndexed || string.IsNullOrEmpty(pattern))
+        if (!CanSearch || string.IsNullOrEmpty(pattern))
             return [];
 
         return _fastIndex.SearchByWildcard(pattern);

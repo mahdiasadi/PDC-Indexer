@@ -47,6 +47,28 @@ public class FileSystemFactory
             .ToList();
     }
 
+    public static IReadOnlyList<(char DriveLetter, string FileSystem, bool IsReady, long TotalSize, long FreeSpace)> GetAllDrives()
+    {
+        var drives = new List<(char, string, bool, long, long)>();
+        foreach (var d in DriveInfo.GetDrives())
+        {
+            try
+            {
+                char letter = d.Name[0];
+                string fs = d.IsReady ? d.DriveFormat : "Unknown";
+                bool ready = d.IsReady;
+                long total = d.IsReady ? d.TotalSize : 0;
+                long free = d.IsReady ? d.AvailableFreeSpace : 0;
+                drives.Add((letter, fs, ready, total, free));
+            }
+            catch
+            {
+                // Skip inaccessible drives
+            }
+        }
+        return drives;
+    }
+
     public static FileSystemType DetectFileSystemType(char driveLetter)
     {
         var info = GetDriveInfo(driveLetter);

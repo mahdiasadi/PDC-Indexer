@@ -35,7 +35,7 @@ public sealed class FastIndex : IDisposable
     private readonly Dictionary<string, List<int>> _nameIndex = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _pathIndex = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<ulong, int> _frnIndex = new();
-    private readonly List<(uint hash, int entryIndex)> _ngramEntries = [];
+    private readonly Dictionary<uint, List<int>> _ngramIndex = new();
 
     public int Count => _entryCount;
     public IReadOnlyList<FileEntry> Entries => _entries;
@@ -139,7 +139,13 @@ public sealed class FastIndex : IDisposable
         {
             string ngram = lower.Substring(i, NgramSize);
             uint hash = Fnv1aHash(ngram);
-            _ngramEntries.Add((hash, entryIndex));
+            if (!_ngramIndex.TryGetValue(hash, out var list))
+            {
+                list = [];
+                _ngramIndex[hash] = list;
+            }
+            list.Add(entryIndex);
+            _ngramCount++;
         }
     }
 
@@ -207,13 +213,16 @@ public sealed class FastIndex : IDisposable
         if (lower.Length < NgramSize) return LinearContainsSearch(substring);
 
         var candidateCounts = new Dictionary<int, int>();
-        
+
         for (int i = 0; i <= lower.Length - NgramSize; i++)
         {
             string ngram = lower.Substring(i, NgramSize);
             uint hash = Fnv1aHash(ngram);
-            
-            foreach (int entryIndex in FindNgramEntries(hash))
+
+            if (!_ngramIndex.TryGetValue(hash, out var ngramEntries))
+                return [];
+
+            foreach (int entryIndex in ngramEntries)
             {
                 if (candidateCounts.TryGetValue(entryIndex, out int count))
                     candidateCounts[entryIndex] = count + 1;
@@ -224,7 +233,7 @@ public sealed class FastIndex : IDisposable
 
         int requiredMatches = lower.Length - NgramSize + 1;
         var results = new List<FileEntry>();
-        
+
         foreach (var kvp in candidateCounts)
         {
             if (kvp.Value >= requiredMatches)
@@ -234,7 +243,7 @@ public sealed class FastIndex : IDisposable
                     results.Add(entry);
             }
         }
-        
+
         return results;
     }
 
@@ -307,8 +316,10 @@ public sealed class FastIndex : IDisposable
 
     private void WriteFiles()
     {
+        const int bufferSize = 4 * 1024 * 1024; // 4MB buffer
+        
         // Write index file
-        using var indexStream = new FileStream(_indexPath, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var indexStream = new FileStream(_indexPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize, FileOptions.SequentialScan);
         using var indexWriter = new BinaryWriter(indexStream);
         
         indexWriter.Write(MagicNumber);
@@ -340,7 +351,7 @@ public sealed class FastIndex : IDisposable
         }
         
         // Write dictionary
-        using var dictStream = new FileStream(_dictPath, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var dictStream = new FileStream(_dictPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize, FileOptions.SequentialScan);
         using var dictWriter = new BinaryWriter(dictStream, System.Text.Encoding.UTF8, true);
         
         dictWriter.Write(_dictCount);
@@ -350,14 +361,17 @@ public sealed class FastIndex : IDisposable
         }
         
         // Write n-gram index
-        using var ngramStream = new FileStream(_ngramPath, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var ngramStream = new FileStream(_ngramPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize, FileOptions.SequentialScan);
         using var ngramWriter = new BinaryWriter(ngramStream);
         
-        ngramWriter.Write(_ngramEntries.Count);
-        foreach (var (hash, entryIndex) in _ngramEntries)
+        ngramWriter.Write(_ngramCount);
+        foreach (var kvp in _ngramIndex)
         {
-            ngramWriter.Write(hash);
-            ngramWriter.Write(entryIndex);
+            foreach (int entryIndex in kvp.Value)
+            {
+                ngramWriter.Write(kvp.Key);
+                ngramWriter.Write(entryIndex);
+            }
         }
     }
 
@@ -456,14 +470,19 @@ public sealed class FastIndex : IDisposable
         using var ngramReader = new BinaryReader(ngramStream);
         
         int ngramCount = ngramReader.ReadInt32();
-        _ngramEntries.Clear();
-        _ngramEntries.Capacity = ngramCount;
-        
+        _ngramIndex.Clear();
+        _ngramCount = ngramCount;
+
         for (int i = 0; i < ngramCount; i++)
         {
             uint hash = ngramReader.ReadUInt32();
             int entryIndex = ngramReader.ReadInt32();
-            _ngramEntries.Add((hash, entryIndex));
+            if (!_ngramIndex.TryGetValue(hash, out var list))
+            {
+                list = [];
+                _ngramIndex[hash] = list;
+            }
+            list.Add(entryIndex);
         }
     }
 
@@ -476,7 +495,7 @@ public sealed class FastIndex : IDisposable
             _nameIndex.Clear();
             _pathIndex.Clear();
             _frnIndex.Clear();
-            _ngramEntries.Clear();
+            _ngramIndex.Clear();
             _pathDict.Clear();
             _dictEntries.Clear();
             _entryCount = 0;
@@ -492,14 +511,5 @@ public sealed class FastIndex : IDisposable
         
         Save();
         _disposed = true;
-    }
-
-    private IEnumerable<int> FindNgramEntries(uint hash)
-    {
-        foreach (var (h, entryIndex) in _ngramEntries)
-        {
-            if (h == hash)
-                yield return entryIndex;
-        }
     }
 }

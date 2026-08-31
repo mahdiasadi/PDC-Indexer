@@ -14,6 +14,7 @@ using ProjectIndexer.Core.Database;
 using ProjectIndexer.Core.FileSystem;
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
+using ProjectIndexer.Wpf.Collections;
 
 namespace ProjectIndexer.Wpf.ViewModels;
 
@@ -60,13 +61,16 @@ public partial class MainViewModel : ObservableObject
     private string _folderPath = "";
 
     [ObservableProperty]
-    private ObservableCollection<FileEntryViewModel> _results = [];
+    private RangeObservableCollection<FileEntryViewModel> _results = new();
 
     [ObservableProperty]
     private FileEntryViewModel? _selectedEntry;
 
     [ObservableProperty]
     private ObservableCollection<DriveViewModel> _drives = [];
+
+    [ObservableProperty]
+    private ObservableCollection<DriveInfoViewModel> _allDrives = [];
 
     public ICollectionView ResultsView { get; }
 
@@ -76,7 +80,6 @@ public partial class MainViewModel : ObservableObject
         _sharedDatabase = new IndexDatabase(_databaseFolder);
         _archiveManager = new ArchiveManager();
         ResultsView = CollectionViewSource.GetDefaultView(Results);
-        try { ResultsView.SortDescriptions.Add(new SortDescription("Name", ListSortDirection.Ascending)); } catch { }
 
         try { LoadDrives(); } catch { StatusText = "Error loading drives"; }
         try { RefreshArchiveInfo(); } catch { }
@@ -93,10 +96,23 @@ public partial class MainViewModel : ObservableObject
             var doc = JsonDocument.Parse(json);
             var folder = doc.RootElement.GetProperty("DatabaseSettings").GetProperty("DatabaseFolder").GetString();
             if (!string.IsNullOrEmpty(folder))
-                return folder;
+            {
+                folder = Environment.ExpandEnvironmentVariables(folder);
+                try
+                {
+                    Directory.CreateDirectory(folder);
+                    return folder;
+                }
+                catch
+                {
+                    // Fall back if path is invalid (e.g., drive doesn't exist)
+                }
+            }
         }
         catch { }
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ProjectIndexer");
+        var fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ProjectIndexer");
+        Directory.CreateDirectory(fallback);
+        return fallback;
     }
 
     private void EnsureTimer()
@@ -177,8 +193,12 @@ public partial class MainViewModel : ObservableObject
                 {
                     if (Results.Count >= 100000) return;
                     int remaining = 100000 - Results.Count;
+
+                    var items = new List<FileEntryViewModel>(Math.Min(remaining, batch.Count));
                     foreach (var entry in batch.Take(remaining))
-                        Results.Add(FileEntryViewModel.FromEntry(entry));
+                        items.Add(FileEntryViewModel.FromEntry(entry));
+
+                    Results.AddRange(items);
                 }
                 catch { }
             });
@@ -189,29 +209,63 @@ public partial class MainViewModel : ObservableObject
     private void LoadDrives()
     {
         Drives.Clear();
-        foreach (var d in FileSystemFactory.GetIndexableDrives())
+        AllDrives.Clear();
+
+        var allDrives = FileSystemFactory.GetAllDrives();
+        foreach (var (letter, fs, ready, total, free) in allDrives)
         {
-            var type = FileSystemFactory.DetectFileSystemType(d);
+            var type = FileSystemFactory.DetectFileSystemType(letter);
+            bool isIndexable = ready && (type != FileSystemType.Unknown);
+            
             Drives.Add(new DriveViewModel
             {
-                DriveLetter = d,
+                DriveLetter = letter,
                 FileSystemType = type,
                 IsAdminRequired = type == FileSystemType.Ntfs,
                 IsAdmin = MftIndexer.IsAdministrator(),
+                IsSelected = isIndexable,
+            });
+
+            AllDrives.Add(new DriveInfoViewModel
+            {
+                DriveLetter = letter,
+                FileSystem = fs,
+                IsReady = ready,
+                TotalSize = total,
+                FreeSpace = free,
+                IsIndexable = isIndexable,
+                RequiresAdmin = type == FileSystemType.Ntfs,
             });
         }
     }
 
     partial void OnSearchTextChanged(string value)
     {
-        ExecuteSearch(value);
+        // Debounce search - wait 300ms after last keystroke
+        _searchDebounceTimer?.Dispose();
+        _searchDebounceTimer = new System.Threading.Timer(async _ =>
+        {
+            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                ExecuteSearch(value);
+            });
+        }, null, 300, -1);
     }
+
+    private System.Threading.Timer? _searchDebounceTimer;
 
     private void ExecuteSearch(string query)
     {
         if (string.IsNullOrWhiteSpace(query))
         {
             ShowAllIndexed();
+            return;
+        }
+
+        // Allow searching partially built indexes while a drive is being indexed.
+        if (!_engines.Values.Any(e => e.IsIndexed || e.EntryCount > 0))
+        {
+            StatusText = "No indexes loaded yet. Click 'Load From Database' or 'Index All Drives' first.";
             return;
         }
 
@@ -224,12 +278,10 @@ public partial class MainViewModel : ObservableObject
         int engineCount = 0, archiveCount = 0;
         foreach (var (_, engine) in _engines)
         {
-            if (engine.IsIndexed)
-            {
-                var r = engine.Search(query);
-                engineCount += r.Count;
-                allResults.AddRange(r);
-            }
+            if (engine.EntryCount == 0) continue;
+            var r = engine.Search(query);
+            engineCount += r.Count;
+            allResults.AddRange(r);
         }
 
         var archiveResults = _archiveManager.SearchAllArchives(query);
@@ -240,15 +292,16 @@ public partial class MainViewModel : ObservableObject
                 allResults.Add(entry);
         }
 
-        allResults = allResults.DistinctBy(e => e.FullPath).Take(100000).ToList();
+        var final = allResults.DistinctBy(e => e.FullPath).Take(100000).ToList();
 
-        Results.Clear();
-        foreach (var entry in allResults)
-            Results.Add(FileEntryViewModel.FromEntry(entry));
+        var vms = new List<FileEntryViewModel>(final.Count);
+        foreach (var entry in final)
+            vms.Add(FileEntryViewModel.FromEntry(entry));
+        Results.ReplaceAll(vms);
 
         sw.Stop();
-        var sample = allResults.Take(5).Select(e => e.Name).ToList();
-        StatusText = $"query='{query}' | {allResults.Count:N0} results ({engineCount} eng + {archiveCount} arc) in {sw.ElapsedMilliseconds}ms | samples: {string.Join(", ", sample)}";
+        var sample = final.Take(5).Select(e => e.Name).ToList();
+        StatusText = $"query='{query}' | {final.Count:N0} results ({engineCount} eng + {archiveCount} arc) in {sw.ElapsedMilliseconds}ms | samples: {string.Join(", ", sample)}";
     }
 
     [RelayCommand]
@@ -280,9 +333,48 @@ public partial class MainViewModel : ObservableObject
                             _pendingResults.Add(entry);
                     };
 
+                    // Background task for periodic archive save during long indexing.
+                    // Uses its own token so cancelling it after a drive completes
+                    // does not abort indexing of subsequent drives.
+                    var archiveCts = new CancellationTokenSource();
+                    var archiveSaveTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromMinutes(1), archiveCts.Token);
+                            while (!archiveCts.Token.IsCancellationRequested)
+                            {
+                                if (engine.IsIndexed && engine.MemoryIndex.Entries.Count > 0)
+                                {
+                                    await Task.Run(() =>
+                                    {
+                                        engine.SaveToDatabase();
+                                        var archivePath = _archiveManager.CreateArchive(
+                                            drive.DriveLetter, engine.MemoryIndex.Entries);
+                                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                                        {
+                                            StatusText = $"Auto-saved archive: {Path.GetFileName(archivePath)} ({engine.EntryCount:N0} entries)";
+                                        });
+                                    }, archiveCts.Token);
+                                }
+                                await Task.Delay(TimeSpan.FromMinutes(2), archiveCts.Token);
+                            }
+                        }
+                        catch (OperationCanceledException) { }
+                        catch { }
+                    }, archiveCts.Token);
+
                     var progress = new Progress<IndexProgress>(p =>
                     {
-                        IndexProgress = p.PercentComplete / 100.0;
+                        double percent = p.Stage switch
+                        {
+                            IndexStage.ParsingRecords when p.TotalRecords > 0 => 5 + p.ParsedRecords * 55.0 / p.TotalRecords,
+                            IndexStage.ReconstructingPaths when p.TotalRecords > 0 => 60 + p.ParsedRecords * 30.0 / p.TotalRecords,
+                            IndexStage.Completed => 100,
+                            IndexStage.Failed => 100,
+                            _ => 5,
+                        };
+                        IndexProgress = Math.Min(100, percent) / 100.0;
                         IndexProgressText = p.ToString();
                         StatusText = $"Indexing {drive.DriveLetter}:\\ — {p}";
                     });
@@ -290,12 +382,16 @@ public partial class MainViewModel : ObservableObject
                     var indexFolder = string.IsNullOrWhiteSpace(FolderPath) ? null : FolderPath;
                     await Task.Run(() => engine.BuildIndex(progress, indexFolder), _indexCts.Token);
 
+                    archiveCts.Cancel(); // Stop periodic saves
+                    try { await archiveSaveTask; } catch { }
+                    archiveCts.Dispose();
+
                     if (isNewEngine)
                         _engines[drive.DriveLetter] = engine;
 
                     TotalFiles = _engines.Values.Sum(e => e.EntryCount);
                     TotalDirectories = _engines.Values.Sum(e => e.MemoryIndex.Filter(f => f.IsDirectory).Count());
-                    StatusText = $"Indexed {drive.DriveLetter}:\\ — {engine.EntryCount:N0} entries";
+                    StatusText = $"Indexed {drive.DriveLetter}:\\ — {engine.EntryCount:N0} entries, saving database & archive...";
 
                     await Task.Run(() =>
                     {
@@ -306,7 +402,7 @@ public partial class MainViewModel : ObservableObject
                         {
                             StatusText = $"Archive saved: {Path.GetFileName(archivePath)}";
                         });
-                    }, _indexCts.Token);
+                    });
 
                     RefreshArchiveInfo();
                     System.Windows.Application.Current.Dispatcher.Invoke(() =>
@@ -493,9 +589,7 @@ public partial class MainViewModel : ObservableObject
             items.Add(vm);
         }
 
-        Results.Clear();
-        foreach (var item in items)
-            Results.Add(item);
+        Results.ReplaceAll(items);
 
         StatusText = $"{TotalFiles:N0} files, {TotalDirectories:N0} dirs indexed | {_engines.Count} drive(s) loaded | {_loadedArchiveEntries.Count:N0} archive entries";
     }
@@ -547,13 +641,14 @@ public partial class MainViewModel : ObservableObject
             var entries = _archiveManager.LoadArchive(archive.FilePath);
             _loadedArchiveEntries.AddRange(entries);
 
-            Results.Clear();
+            var vms = new List<FileEntryViewModel>(entries.Count);
             foreach (var entry in entries)
             {
                 var vm = FileEntryViewModel.FromEntry(entry);
                 vm.Source = $"Archive: {archive.DisplayName}";
-                Results.Add(vm);
+                vms.Add(vm);
             }
+            Results.ReplaceAll(vms);
 
             TotalFiles += entries.Count(e => !e.IsDirectory);
             TotalDirectories += entries.Count(e => e.IsDirectory);
@@ -571,13 +666,14 @@ public partial class MainViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(query)) return;
         var results = _archiveManager.SearchAllArchives(query);
 
-        Results.Clear();
+        var vms = new List<FileEntryViewModel>(results.Count);
         foreach (var (entry, archiveName, info) in results)
         {
             var vm = FileEntryViewModel.FromEntry(entry);
             vm.Source = $"Archive: {info.DisplayName}";
-            Results.Add(vm);
+            vms.Add(vm);
         }
+        Results.ReplaceAll(vms);
 
         StatusText = $"{results.Count} results from archives";
     }
@@ -667,4 +763,28 @@ public partial class DriveViewModel : ObservableObject
 
     public string DisplayName => $"{DriveLetter}:\\ [{FileSystemType}]";
     public string Status => IsAdminRequired && !IsAdmin ? "(needs admin)" : "";
+}
+
+public partial class DriveInfoViewModel : ObservableObject
+{
+    [ObservableProperty] private char _driveLetter;
+    [ObservableProperty] private string _fileSystem = "";
+    [ObservableProperty] private bool _isReady;
+    [ObservableProperty] private long _totalSize;
+    [ObservableProperty] private long _freeSpace;
+    [ObservableProperty] private bool _isIndexable;
+    [ObservableProperty] private bool _requiresAdmin;
+
+    public string DisplayName => $"{DriveLetter}:\\ ({FileSystem})";
+    public string Status => !IsReady ? "Not Ready" : (RequiresAdmin ? "Needs Admin" : (IsIndexable ? "Indexable" : "Not Indexable"));
+    public string SizeDisplay => IsReady ? $"{FormatSize(FreeSpace)} free of {FormatSize(TotalSize)}" : "";
+    
+    private static string FormatSize(long bytes)
+    {
+        if (bytes <= 0) return "0 B";
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
+    }
 }
