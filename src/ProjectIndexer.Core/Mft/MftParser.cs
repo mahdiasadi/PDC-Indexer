@@ -231,8 +231,118 @@ internal sealed class MftParser : IDisposable
     // ================================================================
     // PATH RECONSTRUCTION - ORIGINAL (UNCHANGED)
     // ================================================================
+    // ================================================================
+    // PATH RECONSTRUCTION - FIXED VERSION
+    // ================================================================
+
+    // ================================================================
+    // PATH RECONSTRUCTION - OPTIMIZED (FAST VERSION)
+    // ================================================================
 
     private void ReconstructPaths(List<FileEntry> entries, IndexProgress progressInfo, IProgress<IndexProgress>? progress)
+    {
+        int count = entries.Count;
+        if (count == 0) return;
+
+        // Use dictionary for fast lookup
+        var frnToIndex = new Dictionary<ulong, int>(count);
+        var fullPaths = new string[count];
+        string root = $"{_driveLetter}:\\";
+
+        // First pass: build FRN to index mapping
+        for (int i = 0; i < count; i++)
+        {
+            var entry = entries[i];
+            frnToIndex[entry.Frn] = i;
+            entry.DriveLetter = _driveLetter;
+
+            // Set root path
+            if (entry.Frn == NtfsConstants.RootDirectoryFrn)
+            {
+                fullPaths[i] = root;
+            }
+        }
+
+        // Second pass: resolve paths iteratively
+        // We need multiple passes because parent might appear after child
+        bool changed;
+        int maxPasses = 10; // Prevent infinite loop
+        int pass = 0;
+
+        do
+        {
+            changed = false;
+            pass++;
+
+            for (int i = 0; i < count; i++)
+            {
+                // Skip if already has path or is root
+                if (fullPaths[i] != null)
+                    continue;
+
+                var entry = entries[i];
+
+                // Try to find parent
+                if (frnToIndex.TryGetValue(entry.ParentFrn, out int parentIndex))
+                {
+                    string? parentPath = fullPaths[parentIndex];
+                    if (parentPath != null)
+                    {
+                        // Build path
+                        string path = parentPath + entry.Name;
+                        if (entry.IsDirectory)
+                            path += "\\";
+
+                        fullPaths[i] = path;
+                        changed = true;
+                    }
+                }
+            }
+
+            // Report progress occasionally
+            if (pass % 2 == 0)
+            {
+                int resolved = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    if (fullPaths[i] != null)
+                        resolved++;
+                }
+
+                progressInfo.TotalRecords = count;
+                progressInfo.ParsedRecords = resolved;
+                progress?.Report(progressInfo);
+            }
+
+        } while (changed && pass < maxPasses);
+
+        // Final pass: set unknown paths for remaining entries
+        string unknown = $"{_driveLetter}:\\$Unknown\\";
+        for (int i = 0; i < count; i++)
+        {
+            if (fullPaths[i] == null)
+            {
+                var entry = entries[i];
+                fullPaths[i] = entry.IsDirectory
+                    ? unknown + entry.Name + "\\"
+                    : unknown + entry.Name;
+            }
+            entries[i].FullPath = fullPaths[i];
+        }
+
+        // Callback
+        var callback = EntryParsed;
+        if (callback != null)
+        {
+            for (int i = 0; i < count; i++)
+                callback(entries[i]);
+        }
+
+        progressInfo.TotalRecords = count;
+        progressInfo.ParsedRecords = count;
+        progress?.Report(progressInfo);
+    }
+    private void ReconstructPathsold(List<FileEntry> entries, IndexProgress progressInfo, IProgress<IndexProgress>? progress)
     {
         int count = entries.Count;
         if (count == 0) return;
