@@ -164,6 +164,19 @@ internal class MftParser : IDisposable
                 }
             }
 
+            // Fallback: assign paths to any entries not reached by BFS (orphaned entries)
+            string unknownDir = $"{_driveLetter}:\\$Unknown\\";
+            foreach (var entry in entries)
+            {
+                if (string.IsNullOrEmpty(entry.FullPath))
+                {
+                    entry.FullPath = string.Concat(unknownDir, entry.Name);
+                    if (entry.IsDirectory)
+                        entry.FullPath = string.Concat(entry.FullPath, "\\");
+                    EntryParsed?.Invoke(entry);
+                }
+            }
+
             progressInfo.Stage = IndexStage.Completed;
             progress?.Report(progressInfo);
 

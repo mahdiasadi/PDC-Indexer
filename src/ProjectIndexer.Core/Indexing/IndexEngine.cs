@@ -3,6 +3,7 @@ using ProjectIndexer.Core.FileSystem;
 using ProjectIndexer.Core.Models;
 using ProjectIndexer.Core.Native;
 using ProjectIndexer.Core.Searching;
+using System.IO;
 
 namespace ProjectIndexer.Core.Indexing;
 
@@ -10,33 +11,68 @@ public class IndexEngine
 {
     private readonly IFileSystemProvider _provider;
     private readonly IndexDatabase _database;
+    private readonly FastIndex _fastIndex;
     private readonly InMemoryIndex _memoryIndex = new();
     private readonly SearchEngine _searchEngine;
     private bool _isIndexed;
     private int _entryCountSinceLastSave;
+    private readonly string _fastIndexPath;
 
     public IFileSystemProvider Provider => _provider;
     public InMemoryIndex MemoryIndex => _memoryIndex;
+    public FastIndex FastIndex => _fastIndex;
     public char DriveLetter => _provider.DriveLetter;
     public bool IsIndexed => _isIndexed;
-    public int EntryCount => _memoryIndex.Count;
+    public int EntryCount => _fastIndex.Count;
     public Action<FileEntry>? OnEntryIndexed { get; set; }
 
     private const int SaveBatchSize = 5000;
 
-    public IndexEngine(IFileSystemProvider provider, IndexDatabase? database = null)
+    public IndexEngine(IFileSystemProvider provider, IndexDatabase? database = null, string? fastIndexPath = null)
     {
         _provider = provider;
         _database = database ?? new IndexDatabase();
+        _fastIndexPath = fastIndexPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ProjectIndexer", "FastIndex", $"{_provider.DriveLetter}:");
+        
+        string? indexDir = Path.GetDirectoryName(_fastIndexPath);
+        if (!string.IsNullOrEmpty(indexDir))
+            Directory.CreateDirectory(indexDir);
+        
+        _fastIndex = FastIndex.CreateOrOpen(_fastIndexPath);
         _searchEngine = new SearchEngine(_memoryIndex);
     }
 
     public List<FileEntry> BuildIndex(IProgress<IndexProgress>? progress = null, string? folderPath = null)
     {
-        if (TryIncrementalUpdate(progress, folderPath))
-            return _memoryIndex.Entries.Where(e => e != null).ToList();
+        if (TryLoadFastIndex())
+        {
+            if (TryIncrementalUpdate(progress, folderPath))
+                return _fastIndex.Entries.Where(e => e != null).ToList();
+        }
 
         return FullBuildIndex(progress, folderPath);
+    }
+
+    private bool TryLoadFastIndex()
+    {
+        if (!_fastIndex.IsEmpty)
+        {
+            _isIndexed = true;
+            SyncMemoryIndexFromFastIndex();
+            return true;
+        }
+        return false;
+    }
+
+    private void SyncMemoryIndexFromFastIndex()
+    {
+        _memoryIndex.Clear();
+        foreach (var entry in _fastIndex.Entries)
+        {
+            _memoryIndex.Add(entry);
+        }
     }
 
     private bool TryIncrementalUpdate(IProgress<IndexProgress>? progress, string? folderPath)
@@ -53,15 +89,10 @@ public class IndexEngine
 
         var changes = mft.GetJournalChanges(nextUsn, journalId);
         if (changes.Count == 0)
-            return LoadFromDatabase();
+            return true;
 
-        var entries = _database.LoadIndex(DriveLetter);
-        if (entries.Count == 0) return false;
-
-        _memoryIndex.Clear();
-
-        var frnToEntry = new Dictionary<ulong, FileEntry>(entries.Count);
-        foreach (var e in entries)
+        var frnToEntry = new Dictionary<ulong, FileEntry>(_fastIndex.Count);
+        foreach (var e in _fastIndex.Entries)
             frnToEntry[e.Frn] = e;
 
         var added = new List<FileEntry>();
@@ -70,13 +101,13 @@ public class IndexEngine
         foreach (var change in changes)
         {
             bool isDelete = change.Frn != 0 &&
-                entries.Any(e => e.Frn == change.Frn &&
-                    (e.Name == change.Name || e.Name.Equals(change.Name, StringComparison.OrdinalIgnoreCase)));
+                frnToEntry.ContainsKey(change.Frn);
 
             if (isDelete)
             {
                 deleted.Add(change.Frn);
                 _database.DeleteEntry(change.Frn, DriveLetter);
+                _fastIndex.Clear(); // Will rebuild below
             }
             else
             {
@@ -107,7 +138,10 @@ public class IndexEngine
             }
         }
 
-        var allEntries = entries.Where(e => !deleted.Contains(e.Frn)).Concat(added).ToList();
+        // Rebuild fast index from updated entries
+        var allEntries = frnToEntry.Values.Where(e => !deleted.Contains(e.Frn)).Concat(added).ToList();
+        RebuildFastIndex(allEntries);
+        _memoryIndex.Clear();
         _memoryIndex.AddRange(allEntries);
         _isIndexed = true;
 
@@ -143,12 +177,20 @@ public class IndexEngine
         return true;
     }
 
+    private void RebuildFastIndex(IEnumerable<FileEntry> entries)
+    {
+        _fastIndex.Clear();
+        _fastIndex.AddRange(entries);
+        _fastIndex.Save();
+    }
+
     private List<FileEntry> FullBuildIndex(IProgress<IndexProgress>? progress, string? folderPath)
     {
         var progressInfo = _provider.CreateProgress();
         progressInfo.Stage = IndexStage.Starting;
         progress?.Report(progressInfo);
 
+        _fastIndex.Clear();
         _memoryIndex.Clear();
         _entryCountSinceLastSave = 0;
 
@@ -158,18 +200,23 @@ public class IndexEngine
         _database.ClearDriveIndex(dbConn, DriveLetter);
 
         var entryBuffer = new List<FileEntry>();
+        var fastIndexBuffer = new List<FileEntry>();
         _provider.OnEntryIndexed = entry =>
         {
             if (folderPath != null && !entry.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
                 return;
+            
             entryBuffer.Add(entry);
+            fastIndexBuffer.Add(entry);
             OnEntryIndexed?.Invoke(entry);
 
             _entryCountSinceLastSave++;
             if (_entryCountSinceLastSave >= SaveBatchSize)
             {
                 _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
+                _fastIndex.AddRange(fastIndexBuffer);
                 entryBuffer.Clear();
+                fastIndexBuffer.Clear();
                 _entryCountSinceLastSave = 0;
             }
         };
@@ -186,6 +233,9 @@ public class IndexEngine
         {
             filteredEntries = entries;
         }
+        
+        _fastIndex.AddRange(filteredEntries);
+        _fastIndex.Save();
         _memoryIndex.AddRange(filteredEntries);
         _isIndexed = true;
 
@@ -238,7 +288,28 @@ public class IndexEngine
         if (!_isIndexed || string.IsNullOrEmpty(query))
             return [];
 
+        // Use fast index for primary search, fallback to search engine for complex queries
+        if (IsSimpleContainsQuery(query))
+        {
+            return _fastIndex.SearchByContains(query);
+        }
         return _searchEngine.Execute(query);
+    }
+
+    private static bool IsSimpleContainsQuery(string query)
+    {
+        query = query.Trim();
+        if (query.StartsWith("regex:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.Contains(' ')) return false;
+        if (query.Contains('|')) return false;
+        if (query.StartsWith('!')) return false;
+        if (query.StartsWith('"')) return false;
+        if (query.StartsWith("size:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("modified:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("created:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("content:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("drive:", StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
     }
 
     public List<FileEntry> SearchByPrefix(string prefix)
@@ -246,7 +317,7 @@ public class IndexEngine
         if (!_isIndexed || string.IsNullOrEmpty(prefix))
             return [];
 
-        return _memoryIndex.SearchByPrefix(prefix);
+        return _fastIndex.SearchByPrefix(prefix);
     }
 
     public List<FileEntry> SearchByWildcard(string pattern)
@@ -254,19 +325,20 @@ public class IndexEngine
         if (!_isIndexed || string.IsNullOrEmpty(pattern))
             return [];
 
-        return _memoryIndex.WildcardSearch(pattern);
+        return _fastIndex.SearchByWildcard(pattern);
     }
 
     public FileEntry? GetByPath(string path)
     {
-        return _memoryIndex.GetByPath(path);
+        return _fastIndex.GetByPath(path);
     }
 
     public void SaveToDatabase()
     {
         if (!_isIndexed) return;
 
-        _database.SaveIndex(_memoryIndex.Entries, DriveLetter);
+        _database.SaveIndex(_fastIndex.Entries, DriveLetter);
+        _fastIndex.Save();
     }
 
     public bool LoadFromDatabase()
@@ -277,9 +349,20 @@ public class IndexEngine
         var entries = _database.LoadIndex(DriveLetter);
         if (entries.Count == 0) return false;
 
+        RebuildFastIndex(entries);
         _memoryIndex.Clear();
         _memoryIndex.AddRange(entries);
         _isIndexed = true;
+        return true;
+    }
+
+    public bool LoadFromFastIndex()
+    {
+        if (_fastIndex.IsEmpty)
+            return false;
+
+        _isIndexed = true;
+        SyncMemoryIndexFromFastIndex();
         return true;
     }
 

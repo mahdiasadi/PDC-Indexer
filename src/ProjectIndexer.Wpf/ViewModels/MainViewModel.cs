@@ -10,6 +10,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ProjectIndexer.Core;
 using ProjectIndexer.Core.Archiving;
+using ProjectIndexer.Core.Database;
 using ProjectIndexer.Core.FileSystem;
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
@@ -21,6 +22,7 @@ public partial class MainViewModel : ObservableObject
     private readonly Dictionary<char, IndexEngine> _engines = [];
     private readonly ArchiveManager _archiveManager;
     private readonly string _databaseFolder;
+    private readonly IndexDatabase _sharedDatabase;
     private readonly List<FileEntry> _loadedArchiveEntries = [];
     private CancellationTokenSource? _indexCts;
     private readonly List<FileEntry> _pendingResults = [];
@@ -71,12 +73,16 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _databaseFolder = ReadDatabaseFolderFromConfig();
+        _sharedDatabase = new IndexDatabase(_databaseFolder);
         _archiveManager = new ArchiveManager();
         ResultsView = CollectionViewSource.GetDefaultView(Results);
         try { ResultsView.SortDescriptions.Add(new SortDescription("Name", ListSortDirection.Ascending)); } catch { }
 
         try { LoadDrives(); } catch { StatusText = "Error loading drives"; }
         try { RefreshArchiveInfo(); } catch { }
+        
+        // Load indexes in background
+        _ = Task.Run(LoadIndexesAsync);
     }
 
     private static string ReadDatabaseFolderFromConfig()
@@ -103,6 +109,47 @@ public partial class MainViewModel : ObservableObject
     {
         _uiUpdateTimer?.Dispose();
         _uiUpdateTimer = null;
+        _sharedDatabase?.Dispose();
+    }
+
+    private async Task LoadIndexesAsync()
+    {
+        try
+        {
+            await Task.Delay(500); // Let UI initialize first
+            
+            foreach (var drive in Drives)
+            {
+                try
+                {
+                    var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
+                    var engine = new IndexEngine(provider, _sharedDatabase);
+
+                    if (engine.LoadFromFastIndex())
+                    {
+                        _engines[drive.DriveLetter] = engine;
+                        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            StatusText = $"Loaded fast index for {drive.DriveLetter}:\\ ({engine.EntryCount:N0} entries)";
+                        });
+                    }
+                }
+                catch { }
+            }
+
+            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                TotalFiles = _engines.Values.Sum(e => e.EntryCount);
+                TotalDirectories = _engines.Values.Sum(e => e.MemoryIndex.Filter(f => f.IsDirectory).Count());
+                RefreshArchiveInfo();
+
+                if (string.IsNullOrWhiteSpace(SearchText))
+                    ShowAllIndexed();
+                else
+                    ExecuteSearch(SearchText);
+            });
+        }
+        catch { }
     }
 
     private void FlushPendingResults()
@@ -322,7 +369,7 @@ public partial class MainViewModel : ObservableObject
         if (SelectedEntry == null) return;
         try
         {
-            string folder = System.IO.Path.GetDirectoryName(SelectedEntry.FullPath)!;
+            string folder = System.IO.Path.GetDirectoryName(SelectedEntry.FullPath) ?? SelectedEntry.FullPath;
             Process.Start(new ProcessStartInfo
             {
                 FileName = folder,
@@ -357,23 +404,64 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void LoadFromDatabase()
+    private async Task MigrateToFastIndex()
     {
-        foreach (var drive in Drives)
-        {
-            try
-            {
-                var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
-                var engine = new IndexEngine(provider, new Core.Database.IndexDatabase(_databaseFolder));
+        if (IsIndexing) return;
 
-                if (engine.LoadFromDatabase())
-                {
-                    _engines[drive.DriveLetter] = engine;
-                    StatusText = $"Loaded index for {drive.DriveLetter}:\\ ({engine.EntryCount:N0} entries)";
-                }
-            }
-            catch { }
+        _indexCts = new CancellationTokenSource();
+        IsIndexing = true;
+        StatusText = "Migrating SQLite indexes to fast format...";
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                FastIndexMigrator.MigrateAllDrives(_databaseFolder);
+                FastIndexMigrator.MigrateArchives();
+            }, _indexCts.Token);
+
+            StatusText = "Migration completed. Restart app to use fast indexes.";
         }
+        catch (Exception ex)
+        {
+            StatusText = $"Migration failed: {ex.Message}";
+        }
+        finally
+        {
+            IsIndexing = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task LoadFromDatabase()
+    {
+        if (IsIndexing) return;
+        
+        IsIndexing = true;
+        StatusText = "Loading indexes...";
+
+        await Task.Run(() =>
+        {
+            foreach (var drive in Drives)
+            {
+                try
+                {
+                    var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
+                    var engine = new IndexEngine(provider, _sharedDatabase);
+
+                    if (engine.LoadFromFastIndex())
+                    {
+                        _engines[drive.DriveLetter] = engine;
+                    }
+                    else if (engine.LoadFromDatabase())
+                    {
+                        _engines[drive.DriveLetter] = engine;
+                        engine.SaveToDatabase();
+                    }
+                }
+                catch { }
+            }
+        });
 
         TotalFiles = _engines.Values.Sum(e => e.EntryCount);
         TotalDirectories = _engines.Values.Sum(e => e.MemoryIndex.Filter(f => f.IsDirectory).Count());
@@ -383,6 +471,9 @@ public partial class MainViewModel : ObservableObject
             ShowAllIndexed();
         else
             ExecuteSearch(SearchText);
+
+        IsIndexing = false;
+        StatusText = $"Loaded {_engines.Count} drive(s) - {TotalFiles:N0} files, {TotalDirectories:N0} dirs";
     }
 
     private void ShowAllIndexed()
@@ -431,6 +522,22 @@ public partial class MainViewModel : ObservableObject
         {
             LoadArchiveEntries(dialog.SelectedArchive);
         }
+    }
+
+    [RelayCommand]
+    private void RefreshArchives()
+    {
+        RefreshArchiveInfo();
+        StatusText = $"Archives: {ArchiveCount} | Total size: {FormatSize(TotalArchiveSize)}";
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes <= 0) return "0 B";
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 
     private void LoadArchiveEntries(ArchiveInfo archive)

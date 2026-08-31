@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
 using ProjectIndexer.Core.Searching;
@@ -9,6 +8,8 @@ public class ArchiveManager
 {
     private readonly string _archiveFolder;
     private readonly SearchEngine _searchEngine;
+    private readonly Dictionary<string, FastArchiveIndex> _archiveCache = new();
+    private readonly object _cacheLock = new();
 
     public string ArchiveFolder => _archiveFolder;
 
@@ -27,12 +28,17 @@ public class ArchiveManager
         driveLetter = char.ToUpperInvariant(driveLetter);
         volumeSerial ??= GetVolumeSerial(driveLetter);
         string timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
-        string archiveName = $"{driveLetter}_{volumeSerial}_{timestamp}.archive";
+        string archiveName = $"{driveLetter}_{volumeSerial}_{timestamp}";
         string archivePath = Path.Combine(_archiveFolder, archiveName);
 
         var entryList = entries.ToList();
-        var db = new Archiving.ArchiveDatabase(archivePath);
-        db.SaveArchive(entryList, driveLetter);
+        var fastIndex = new FastArchiveIndex(archivePath);
+        fastIndex.SaveArchive(entryList, driveLetter);
+
+        lock (_cacheLock)
+        {
+            _archiveCache[archivePath] = fastIndex;
+        }
 
         return archivePath;
     }
@@ -43,7 +49,7 @@ public class ArchiveManager
             return [];
 
         var archives = new List<ArchiveInfo>();
-        foreach (string file in Directory.GetFiles(_archiveFolder, "*.archive"))
+        foreach (string file in Directory.GetFiles(_archiveFolder, "*.idx"))
         {
             try
             {
@@ -57,13 +63,13 @@ public class ArchiveManager
                 if (driveLetter.HasValue && letter != driveLetter.Value)
                     continue;
 
-                var db = new Archiving.ArchiveDatabase(file);
-                long count = db.GetEntryCount();
+                var fastIndex = FastArchiveIndex.CreateOrOpen(file[..^4]);
+                long count = fastIndex.Count;
                 DateTime created = info.CreationTimeUtc;
 
                 archives.Add(new ArchiveInfo
                 {
-                    FilePath = file,
+                    FilePath = file[..^4],
                     DriveLetter = letter,
                     CreatedAt = created,
                     EntryCount = count,
@@ -80,28 +86,43 @@ public class ArchiveManager
         return archives.OrderByDescending(a => a.CreatedAt).ToList();
     }
 
-    public List<FileEntry> LoadArchive(string archivePath)
+    public List<FileEntry> LoadArchive(string archiveBasePath)
     {
-        if (!File.Exists(archivePath))
-            throw new FileNotFoundException("Archive not found", archivePath);
-
-        var db = new Archiving.ArchiveDatabase(archivePath);
-        return db.LoadAll();
+        var fastIndex = GetOrCreateFastIndex(archiveBasePath);
+        return fastIndex.LoadAll();
     }
 
-    public List<FileEntry> SearchArchive(string archivePath, string query)
+    public List<FileEntry> SearchArchive(string archiveBasePath, string query)
     {
-        if (!File.Exists(archivePath))
-            throw new FileNotFoundException("Archive not found", archivePath);
-
-        var db = new Archiving.ArchiveDatabase(archivePath);
-        var entries = db.LoadAll();
-
+        var fastIndex = GetOrCreateFastIndex(archiveBasePath);
+        
+        if (IsSimpleQuery(query))
+        {
+            return fastIndex.SearchByContains(query);
+        }
+        
+        var entries = fastIndex.LoadAll();
         var index = new InMemoryIndex();
         index.AddRange(entries);
 
         var engine = new SearchEngine(index);
         return engine.Execute(query);
+    }
+
+    private static bool IsSimpleQuery(string query)
+    {
+        query = query.Trim();
+        if (query.StartsWith("regex:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.Contains(' ')) return false;
+        if (query.Contains('|')) return false;
+        if (query.StartsWith('!')) return false;
+        if (query.StartsWith('"')) return false;
+        if (query.StartsWith("size:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("modified:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("created:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("content:", StringComparison.OrdinalIgnoreCase)) return false;
+        if (query.StartsWith("drive:", StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
     }
 
     public List<(FileEntry Entry, string ArchiveName, ArchiveInfo Info)> SearchAllArchives(string query)
@@ -115,7 +136,7 @@ public class ArchiveManager
             {
                 var matches = SearchArchive(archive.FilePath, query);
                 foreach (var entry in matches)
-                    results.Add((entry, Path.GetFileNameWithoutExtension(archive.FilePath), archive));
+                    results.Add((entry, Path.GetFileNameWithoutExtension(archive.FilePath + ".idx"), archive));
             }
             catch
             {
@@ -125,10 +146,36 @@ public class ArchiveManager
         return results;
     }
 
-    public void DeleteArchive(string archivePath)
+    private FastArchiveIndex GetOrCreateFastIndex(string archiveBasePath)
     {
-        if (File.Exists(archivePath))
-            File.Delete(archivePath);
+        lock (_cacheLock)
+        {
+            if (_archiveCache.TryGetValue(archiveBasePath, out var cached))
+                return cached;
+
+            var fastIndex = FastArchiveIndex.CreateOrOpen(archiveBasePath);
+            _archiveCache[archiveBasePath] = fastIndex;
+            return fastIndex;
+        }
+    }
+
+    public void DeleteArchive(string archiveBasePath)
+    {
+        lock (_cacheLock)
+        {
+            if (_archiveCache.TryGetValue(archiveBasePath, out var cached))
+            {
+                cached.Dispose();
+                _archiveCache.Remove(archiveBasePath);
+            }
+        }
+
+        foreach (string ext in new[] { ".idx", ".dat", ".ngm", ".dict" })
+        {
+            string file = archiveBasePath + ext;
+            if (File.Exists(file))
+                File.Delete(file);
+        }
     }
 
     public void MergeArchives(char driveLetter, int keepCount = 5)
@@ -144,7 +191,7 @@ public class ArchiveManager
     {
         if (!Directory.Exists(_archiveFolder)) return 0;
 
-        return Directory.GetFiles(_archiveFolder, "*.archive")
+        return Directory.GetFiles(_archiveFolder, "*.idx")
             .Sum(f => new FileInfo(f).Length);
     }
 
@@ -152,7 +199,7 @@ public class ArchiveManager
     {
         if (!Directory.Exists(_archiveFolder)) return 0;
 
-        return Directory.GetFiles(_archiveFolder, "*.archive").Length;
+        return Directory.GetFiles(_archiveFolder, "*.idx").Length;
     }
 
     public static string GetVolumeSerial(char driveLetter)
