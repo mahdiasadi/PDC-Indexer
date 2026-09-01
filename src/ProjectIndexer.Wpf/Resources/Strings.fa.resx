@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="AppTitle" xml:space="preserve">
+    <value>PDC Indexer</value>
+  </data>
+  <data name="Ready" xml:space="preserve">
+    <value>آماده</value>
+  </data>
+  <data name="Search" xml:space="preserve">
+    <value>جستجو</value>
+  </data>
+  <data name="SearchPlaceholder" xml:space="preserve">
+    <value>برای جستجو تایپ کنید...</value>
+  </data>
+  <data name="IndexAllDrives" xml:space="preserve">
+    <value>ایندکس تمام درایوها</value>
+  </data>
+  <data name="LoadFromDatabase" xml:space="preserve">
+    <value>بارگذاری از دیتابیس</value>
+  </data>
+  <data name="CancelIndexing" xml:space="preserve">
+    <value>لغو</value>
+  </data>
+  <data name="ClearFolder" xml:space="preserve">
+    <value>پاک کردن پوشه</value>
+  </data>
+  <data name="FolderPath" xml:space="preserve">
+    <value>مسیر پوشه</value>
+  </data>
+  <data name="MigrateToFastIndex" xml:space="preserve">
+    <value>مهاجرت به ایندکس سریع</value>
+  </data>
+  <data name="ShowArchives" xml:space="preserve">
+    <value>نمایش آرشیوها</value>
+  </data>
+  <data name="RefreshArchives" xml:space="preserve">
+    <value>بروزرسانی آرشیوها</value>
+  </data>
+  <data name="OpenFile" xml:space="preserve">
+    <value>باز کردن فایل</value>
+  </data>
+  <data name="OpenFolder" xml:space="preserve">
+    <value>باز کردن پوشه</value>
+  </data>
+  <data name="CopyPath" xml:space="preserve">
+    <value>کپی مسیر</value>
+  </data>
+  <data name="CopyName" xml:space="preserve">
+    <value>کپی نام</value>
+  </data>
+  <data name="Name" xml:space="preserve">
+    <value>نام</value>
+  </data>
+  <data name="Path" xml:space="preserve">
+    <value>مسیر</value>
+  </data>
+  <data name="Size" xml:space="preserve">
+    <value>اندازه</value>
+  </data>
+  <data name="Modified" xml:space="preserve">
+    <value>تغییر یافته</value>
+  </data>
+  <data name="Created" xml:space="preserve">
+    <value>ایجاد شده</value>
+  </data>
+  <data name="Type" xml:space="preserve">
+    <value>نوع</value>
+  </data>
+  <data name="Extension" xml:space="preserve">
+    <value>پسوند</value>
+  </data>
+  <data name="Attributes" xml:space="preserve">
+    <value>ویژگی‌ها</value>
+  </data>
+  <data name="Source" xml:space="preserve">
+    <value>منبع</value>
+  </data>
+  <data name="TotalFiles" xml:space="preserve">
+    <value>فایل‌ها: {0:N0}</value>
+  </data>
+  <data name="TotalDirectories" xml:space="preserve">
+    <value>پوشه‌ها: {0:N0}</value>
+  </data>
+  <data name="ArchiveCount" xml:space="preserve">
+    <value>آرشیوها: {0}</value>
+  </data>
+  <data name="TotalArchiveSize" xml:space="preserve">
+    <value>اندازه آرشیو: {0}</value>
+  </data>
+  <data name="Indexing" xml:space="preserve">
+    <value>در حال ایندکس {0}:\\</value>
+  </data>
+  <data name="IndexingCompleted" xml:space="preserve">
+    <value>ایندکس کامل شد: {0:N0} مورد</value>
+  </data>
+  <data name="ArchiveSaving" xml:space="preserve">
+    <value>در حال ذخیره آرشیو...</value>
+  </data>
+  <data name="ArchiveSaved" xml:space="preserve">
+    <value>آرشیو ذخیره شد: {0}</value>
+  </data>
+  <data name="ArchiveLoading" xml:space="preserve">
+    <value>در حال بارگذاری آرشیو...</value>
+  </data>
+  <data name="ArchiveLoaded" xml:space="preserve">
+    <value>{0:N0} مورد از آرشیو بارگذاری شد</value>
+  </data>
+  <data name="AdminRequired" xml:space="preserve">
+    <value>نیاز به دسترسی ادمین</value>
+  </data>
+  <data name="Language" xml:space="preserve">
+    <value>زبان</value>
+  </data>
+  <data name="English" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="Persian" xml:space="preserve">
+    <value>فارسی</value>
+  </data>
+  <data name="Arabic" xml:space="preserve">
+    <value>العربية</value>
+  </data>
+  <data name="Turkish" xml:space="preserve">
+    <value>Türkçe</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>تنظیمات</value>
+  </data>
+  <data name="SelectDrives" xml:space="preserve">
+    <value>انتخاب درایوها برای ایندکس</value>
+  </data>
+  <data name="Drive" xml:space="preserve">
+    <value>درایو</value>
+  </data>
+  <data name="FileSystem" xml:space="preserve">
+    <value>سیستم فایل</value>
+  </data>
+  <data name="Status" xml:space="preserve">
+    <value>وضعیت</value>
+  </data>
+  <data name="Indexable" xml:space="preserve">
+    <value>قابل ایندکس</value>
+  </data>
+  <data name="NotIndexable" xml:space="preserve">
+    <value>غیرقابل ایندکس</value>
+  </data>
+  <data name="NeedsAdmin" xml:space="preserve">
+    <value>نیاز به ادمین</value>
+  </data>
+  <data name="FreeSpace" xml:space="preserve">
+    <value>فضای آزاد</value>
+  </data>
+  <data name="TotalSize" xml:space="preserve">
+    <value>حجم کل</value>
+  </data>
+  <data name="SelectArchive" xml:space="preserve">
+    <value>انتخاب آرشیو</value>
+  </data>
+  <data name="ArchiveName" xml:space="preserve">
+    <value>نام آرشیو</value>
+  </data>
+  <data name="CreatedAt" xml:space="preserve">
+    <value>تاریخ ایجاد</value>
+  </data>
+  <data name="EntryCount" xml:space="preserve">
+    <value>تعداد موارد</value>
+  </data>
+  <data name="FileSize" xml:space="preserve">
+    <value>اندازه فایل</value>
+  </data>
+  <data name="DriveLabel" xml:space="preserve">
+    <value>برچسب درایو</value>
+  </data>
+  <data name="LoadArchive" xml:space="preserve">
+    <value>بارگذاری آرشیو</value>
+  </data>
+  <data name="DeleteArchive" xml:space="preserve">
+    <value>حذف آرشیو</value>
+  </data>
+  <data name="ConfirmDelete" xml:space="preserve">
+    <value>آیا از حذف این آرشیو مطمئن هستید؟</value>
+  </data>
+  <data name="Error" xml:space="preserve">
+    <value>خطا</value>
+  </data>
+  <data name="Success" xml:space="preserve">
+    <value>موفقیت</value>
+  </data>
+  <data name="Warning" xml:space="preserve">
+    <value>هشدار</value>
+  </data>
+  <data name="Information" xml:space="preserve">
+    <value>اطلاعات</value>
+  </data>
+  <data name="NoArchivesFound" xml:space="preserve">
+    <value>هیچ آرشیوی یافت نشد</value>
+  </data>
+  <data name="NoIndexesLoaded" xml:space="preserve">
+    <value>هنوز ایندکسی بارگذاری نشده. ابتدا روی 'بارگذاری از دیتابیس' یا 'ایندکس تمام درایوها' کلیک کنید.</value>
+  </data>
+  <data name="SearchResults" xml:space="preserve">
+    <value>نتایج جستجو: {0:N0} مورد</value>
+  </data>
+  <data name="ShowingFirst" xml:space="preserve">
+    <value>نمایش {0:N0} اول از {1:N0}</value>
+  </data>
+  <data name="IndexingCancelled" xml:space="preserve">
+    <value>ایندکس لغو شد</value>
+  </data>
+  <data name="PathCopied" xml:space="preserve">
+    <value>مسیر در کلیپ‌بورد کپی شد</value>
+  </data>
+  <data name="NameCopied" xml:space="preserve">
+    <value>نام در کلیپ‌بورد کپی شد</value>
+  </data>
+  <data name="MigratingIndexes" xml:space="preserve">
+    <value>در حال مهاجرت ایندکس‌های SQLite به فرمت سریع...</value>
+  </data>
+  <data name="MigrationCompleted" xml:space="preserve">
+    <value>مهاجرت کامل شد. برای استفاده از ایندکس سریع برنامه را مجدداً راه‌اندازی کنید.</value>
+  </data>
+  <data name="LoadingIndexes" xml:space="preserve">
+    <value>در حال بارگذاری ایندکس‌ها...</value>
+  </data>
+  <data name="ArchiveLoadCancelled" xml:space="preserve">
+    <value>بارگذاری آرشیو لغو شد</value>
+  </data>
+</root>

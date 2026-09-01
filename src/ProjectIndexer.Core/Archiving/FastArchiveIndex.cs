@@ -479,6 +479,15 @@ public sealed class FastArchiveIndex : IDisposable
             string fullPath = pathId >= 0 && pathId < _dictEntries.Count 
                 ? _dictEntries[pathId] 
                 : "";
+            
+            // Extract name from full path
+            string name = fullPath;
+            if (!string.IsNullOrEmpty(fullPath))
+            {
+                int lastSlash = fullPath.LastIndexOf('\\');
+                if (lastSlash >= 0 && lastSlash < fullPath.Length - 1)
+                    name = fullPath[(lastSlash + 1)..];
+            }
 
             var entry = new FileEntry
             {
@@ -495,6 +504,7 @@ public sealed class FastArchiveIndex : IDisposable
                 IsTemporary = isTemporary,
                 DriveLetter = driveLetter,
                 FullPath = fullPath,
+                Name = name,
             };
             
             _entries.Add(entry);

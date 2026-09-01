@@ -382,6 +382,31 @@ public class IndexEngine
         return true;
     }
 
+    public async Task<bool> LoadFromDatabaseAsync(IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+    {
+        if (!_database.HasIndex(DriveLetter))
+            return false;
+
+        progress?.Report("Loading index from database...");
+        
+        var entries = await Task.Run(() => _database.LoadIndex(DriveLetter), cancellationToken);
+        if (entries.Count == 0) return false;
+
+        progress?.Report($"Rebuilding fast index ({entries.Count:N0} entries)...");
+        await Task.Run(() => RebuildFastIndex(entries), cancellationToken);
+        
+        progress?.Report("Syncing memory index...");
+        await Task.Run(() =>
+        {
+            _memoryIndex.Clear();
+            _memoryIndex.AddRange(entries);
+        }, cancellationToken);
+        
+        _isIndexed = true;
+        progress?.Report("Index loaded successfully");
+        return true;
+    }
+
     public bool LoadFromFastIndex()
     {
         if (_fastIndex.IsEmpty)
@@ -389,6 +414,19 @@ public class IndexEngine
 
         _isIndexed = true;
         SyncMemoryIndexFromFastIndex();
+        return true;
+    }
+
+    public async Task<bool> LoadFromFastIndexAsync(IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+    {
+        if (_fastIndex.IsEmpty)
+            return false;
+
+        progress?.Report("Loading fast index...");
+        
+        await Task.Run(() => SyncMemoryIndexFromFastIndex(), cancellationToken);
+        _isIndexed = true;
+        progress?.Report("Fast index loaded");
         return true;
     }
 

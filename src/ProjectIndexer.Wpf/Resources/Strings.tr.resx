@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="AppTitle" xml:space="preserve">
+    <value>PDC Indexer</value>
+  </data>
+  <data name="Ready" xml:space="preserve">
+    <value>Hazır</value>
+  </data>
+  <data name="Search" xml:space="preserve">
+    <value>Ara</value>
+  </data>
+  <data name="SearchPlaceholder" xml:space="preserve">
+    <value>Ara için yazın...</value>
+  </data>
+  <data name="IndexAllDrives" xml:space="preserve">
+    <value>Tüm Sürücüleri İndeksle</value>
+  </data>
+  <data name="LoadFromDatabase" xml:space="preserve">
+    <value>Veritabanından Yükle</value>
+  </data>
+  <data name="CancelIndexing" xml:space="preserve">
+    <value>İptal</value>
+  </data>
+  <data name="ClearFolder" xml:space="preserve">
+    <value>Klasörü Temizle</value>
+  </data>
+  <data name="FolderPath" xml:space="preserve">
+    <value>Klasör Yolu</value>
+  </data>
+  <data name="MigrateToFastIndex" xml:space="preserve">
+    <value>Hızlı İndekse Geçiş</value>
+  </data>
+  <data name="ShowArchives" xml:space="preserve">
+    <value>Arşivleri Göster</value>
+  </data>
+  <data name="RefreshArchives" xml:space="preserve">
+    <value>Arşivleri Yenile</value>
+  </data>
+  <data name="OpenFile" xml:space="preserve">
+    <value>Dosyayı Aç</value>
+  </data>
+  <data name="OpenFolder" xml:space="preserve">
+    <value>Klasörü Aç</value>
+  </data>
+  <data name="CopyPath" xml:space="preserve">
+    <value>Yolu Kopyala</value>
+  </data>
+  <data name="CopyName" xml:space="preserve">
+    <value>İsmi Kopyala</value>
+  </data>
+  <data name="Name" xml:space="preserve">
+    <value>İsim</value>
+  </data>
+  <data name="Path" xml:space="preserve">
+    <value>Yol</value>
+  </data>
+  <data name="Size" xml:space="preserve">
+    <value>Boyut</value>
+  </data>
+  <data name="Modified" xml:space="preserve">
+    <value>Değiştirildi</value>
+  </data>
+  <data name="Created" xml:space="preserve">
+    <value>Oluşturuldu</value>
+  </data>
+  <data name="Type" xml:space="preserve">
+    <value>Tür</value>
+  </data>
+  <data name="Extension" xml:space="preserve">
+    <value>Uzantı</value>
+  </data>
+  <data name="Attributes" xml:space="preserve">
+    <value>Özellikler</value>
+  </data>
+  <data name="Source" xml:space="preserve">
+    <value>Kaynak</value>
+  </data>
+  <data name="TotalFiles" xml:space="preserve">
+    <value>Dosyalar: {0:N0}</value>
+  </data>
+  <data name="TotalDirectories" xml:space="preserve">
+    <value>Klasörler: {0:N0}</value>
+  </data>
+  <data name="ArchiveCount" xml:space="preserve">
+    <value>Arşivler: {0}</value>
+  </data>
+  <data name="TotalArchiveSize" xml:space="preserve">
+    <value>Arşiv Boyutu: {0}</value>
+  </data>
+  <data name="Indexing" xml:space="preserve">
+    <value>{0}:\\ indeksleniyor</value>
+  </data>
+  <data name="IndexingCompleted" xml:space="preserve">
+    <value>İndeksleme tamamlandı: {0:N0} öğe</value>
+  </data>
+  <data name="ArchiveSaving" xml:space="preserve">
+    <value>Arşiv kaydediliyor...</value>
+  </data>
+  <data name="ArchiveSaved" xml:space="preserve">
+    <value>Arşiv kaydedildi: {0}</value>
+  </data>
+  <data name="ArchiveLoading" xml:space="preserve">
+    <value>Arşiv yükleniyor...</value>
+  </data>
+  <data name="ArchiveLoaded" xml:space="preserve">
+    <value>Arşivden {0:N0} öğe yüklendi</value>
+  </data>
+  <data name="AdminRequired" xml:space="preserve">
+    <value>Yönetici yetkisi gerekiyor</value>
+  </data>
+  <data name="Language" xml:space="preserve">
+    <value>Dil</value>
+  </data>
+  <data name="English" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="Persian" xml:space="preserve">
+    <value>Farsça</value>
+  </data>
+  <data name="Arabic" xml:space="preserve">
+    <value>Arapça</value>
+  </data>
+  <data name="Turkish" xml:space="preserve">
+    <value>Türkçe</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>Ayarlar</value>
+  </data>
+  <data name="SelectDrives" xml:space="preserve">
+    <value>İndekslenecek Sürücüleri Seçin</value>
+  </data>
+  <data name="Drive" xml:space="preserve">
+    <value>Sürücü</value>
+  </data>
+  <data name="FileSystem" xml:space="preserve">
+    <value>Dosya Sistemi</value>
+  </data>
+  <data name="Status" xml:space="preserve">
+    <value>Durum</value>
+  </data>
+  <data name="Indexable" xml:space="preserve">
+    <value>İndekslenebilir</value>
+  </data>
+  <data name="NotIndexable" xml:space="preserve">
+    <value>İndekslenemez</value>
+  </data>
+  <data name="NeedsAdmin" xml:space="preserve">
+    <value>Yönetici Gerekli</value>
+  </data>
+  <data name="FreeSpace" xml:space="preserve">
+    <value>Boş Alan</value>
+  </data>
+  <data name="TotalSize" xml:space="preserve">
+    <value>Toplam Boyut</value>
+  </data>
+  <data name="SelectArchive" xml:space="preserve">
+    <value>Arşiv Seçin</value>
+  </data>
+  <data name="ArchiveName" xml:space="preserve">
+    <value>Arşiv Adı</value>
+  </data>
+  <data name="CreatedAt" xml:space="preserve">
+    <value>Oluşturulma Tarihi</value>
+  </data>
+  <data name="EntryCount" xml:space="preserve">
+    <value>Öğe Sayısı</value>
+  </data>
+  <data name="FileSize" xml:space="preserve">
+    <value>Dosya Boyutu</value>
+  </data>
+  <data name="DriveLabel" xml:space="preserve">
+    <value>Sürücü Etiketi</value>
+  </data>
+  <data name="LoadArchive" xml:space="preserve">
+    <value>Arşivi Yükle</value>
+  </data>
+  <data name="DeleteArchive" xml:space="preserve">
+    <value>Arşivi Sil</value>
+  </data>
+  <data name="ConfirmDelete" xml:space="preserve">
+    <value>Bu arşiv silinsin mi?</value>
+  </data>
+  <data name="Error" xml:space="preserve">
+    <value>Hata</value>
+  </data>
+  <data name="Success" xml:space="preserve">
+    <value>Başarılı</value>
+  </data>
+  <data name="Warning" xml:space="preserve">
+    <value>Uyarı</value>
+  </data>
+  <data name="Information" xml:space="preserve">
+    <value>Bilgi</value>
+  </data>
+  <data name="NoArchivesFound" xml:space="preserve">
+    <value>Arşiv bulunamadı</value>
+  </data>
+  <data name="NoIndexesLoaded" xml:space="preserve">
+    <value>Henüz indeks yüklenmedi. Önce 'Veritabanından Yükle' veya 'Tüm Sürücüleri İndeksle' tıklayın.</value>
+  </data>
+  <data name="SearchResults" xml:space="preserve">
+    <value>Arama Sonuçları: {0:N0} öğe</value>
+  </data>
+  <data name="ShowingFirst" xml:space="preserve">
+    <value>İlk {0:N0} / {1:N0} gösteriliyor</value>
+  </data>
+  <data name="IndexingCancelled" xml:space="preserve">
+    <value>İndeksleme iptal edildi</value>
+  </data>
+  <data name="PathCopied" xml:space="preserve">
+    <value>Yol panoya kopyalandı</value>
+  </data>
+  <data name="NameCopied" xml:space="preserve">
+    <value>İsim panoya kopyalandı</value>
+  </data>
+  <data name="MigratingIndexes" xml:space="preserve">
+    <value>SQLite indeksleri hızlı formata taşınıyor...</value>
+  </data>
+  <data name="MigrationCompleted" xml:space="preserve">
+    <value>Taşıma tamamlandı. Hızlı indeks için uygulamayı yeniden başlatın.</value>
+  </data>
+  <data name="LoadingIndexes" xml:space="preserve">
+    <value>İndeksler yükleniyor...</value>
+  </data>
+  <data name="ArchiveLoadCancelled" xml:space="preserve">
+    <value>Arşiv yükleme iptal edildi</value>
+  </data>
+</root>

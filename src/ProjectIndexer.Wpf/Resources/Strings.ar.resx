@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="AppTitle" xml:space="preserve">
+    <value>PDC Indexer</value>
+  </data>
+  <data name="Ready" xml:space="preserve">
+    <value>جاهز</value>
+  </data>
+  <data name="Search" xml:space="preserve">
+    <value>بحث</value>
+  </data>
+  <data name="SearchPlaceholder" xml:space="preserve">
+    <value>اكتب للبحث...</value>
+  </data>
+  <data name="IndexAllDrives" xml:space="preserve">
+    <value>فهرسة جميع محركات الأقراص</value>
+  </data>
+  <data name="LoadFromDatabase" xml:space="preserve">
+    <value>تحميل من قاعدة البيانات</value>
+  </data>
+  <data name="CancelIndexing" xml:space="preserve">
+    <value>إلغاء</value>
+  </data>
+  <data name="ClearFolder" xml:space="preserve">
+    <value>مسح المجلد</value>
+  </data>
+  <data name="FolderPath" xml:space="preserve">
+    <value>مسار المجلد</value>
+  </data>
+  <data name="MigrateToFastIndex" xml:space="preserve">
+    <value>الترحيل إلى الفهرس السريع</value>
+  </data>
+  <data name="ShowArchives" xml:space="preserve">
+    <value>عرض الأرشيفات</value>
+  </data>
+  <data name="RefreshArchives" xml:space="preserve">
+    <value>تحديث الأرشيفات</value>
+  </data>
+  <data name="OpenFile" xml:space="preserve">
+    <value>فتح الملف</value>
+  </data>
+  <data name="OpenFolder" xml:space="preserve">
+    <value>فتح المجلد</value>
+  </data>
+  <data name="CopyPath" xml:space="preserve">
+    <value>نسخ المسار</value>
+  </data>
+  <data name="CopyName" xml:space="preserve">
+    <value>نسخ الاسم</value>
+  </data>
+  <data name="Name" xml:space="preserve">
+    <value>الاسم</value>
+  </data>
+  <data name="Path" xml:space="preserve">
+    <value>المسار</value>
+  </data>
+  <data name="Size" xml:space="preserve">
+    <value>الحجم</value>
+  </data>
+  <data name="Modified" xml:space="preserve">
+    <value>تم التعديل</value>
+  </data>
+  <data name="Created" xml:space="preserve">
+    <value>تاريخ الإنشاء</value>
+  </data>
+  <data name="Type" xml:space="preserve">
+    <value>النوع</value>
+  </data>
+  <data name="Extension" xml:space="preserve">
+    <value>الامتداد</value>
+  </data>
+  <data name="Attributes" xml:space="preserve">
+    <value>السمات</value>
+  </data>
+  <data name="Source" xml:space="preserve">
+    <value>المصدر</value>
+  </data>
+  <data name="TotalFiles" xml:space="preserve">
+    <value>الملفات: {0:N0}</value>
+  </data>
+  <data name="TotalDirectories" xml:space="preserve">
+    <value>المجلدات: {0:N0}</value>
+  </data>
+  <data name="ArchiveCount" xml:space="preserve">
+    <value>الأرشيفات: {0}</value>
+  </data>
+  <data name="TotalArchiveSize" xml:space="preserve">
+    <value>حجم الأرشيف: {0}</value>
+  </data>
+  <data name="Indexing" xml:space="preserve">
+    <value>جاري الفهرسة {0}:\\</value>
+  </data>
+  <data name="IndexingCompleted" xml:space="preserve">
+    <value>اكتملت الفهرسة: {0:N0} إدخال</value>
+  </data>
+  <data name="ArchiveSaving" xml:space="preserve">
+    <value>جاري حفظ الأرشيف...</value>
+  </data>
+  <data name="ArchiveSaved" xml:space="preserve">
+    <value>تم حفظ الأرشيف: {0}</value>
+  </data>
+  <data name="ArchiveLoading" xml:space="preserve">
+    <value>جاري تحميل الأرشيف...</value>
+  </data>
+  <data name="ArchiveLoaded" xml:space="preserve">
+    <value>تم تحميل {0:N0} إدخال من الأرشيف</value>
+  </data>
+  <data name="AdminRequired" xml:space="preserve">
+    <value>مطلوب صلاحيات المدير</value>
+  </data>
+  <data name="Language" xml:space="preserve">
+    <value>اللغة</value>
+  </data>
+  <data name="English" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="Persian" xml:space="preserve">
+    <value>فارسی</value>
+  </data>
+  <data name="Arabic" xml:space="preserve">
+    <value>العربية</value>
+  </data>
+  <data name="Turkish" xml:space="preserve">
+    <value>Türkçe</value>
+  </data>
+  <data name="Settings" xml:space="preserve">
+    <value>الإعدادات</value>
+  </data>
+  <data name="SelectDrives" xml:space="preserve">
+    <value>اختيار محركات الأقراص للفهرسة</value>
+  </data>
+  <data name="Drive" xml:space="preserve">
+    <value>محرك الأقراص</value>
+  </data>
+  <data name="FileSystem" xml:space="preserve">
+    <value>نظام الملفات</value>
+  </data>
+  <data name="Status" xml:space="preserve">
+    <value>الحالة</value>
+  </data>
+  <data name="Indexable" xml:space="preserve">
+    <value>قابل للفهرسة</value>
+  </data>
+  <data name="NotIndexable" xml:space="preserve">
+    <value>غير قابل للفهرسة</value>
+  </data>
+  <data name="NeedsAdmin" xml:space="preserve">
+    <value>يحتاج مدير</value>
+  </data>
+  <data name="FreeSpace" xml:space="preserve">
+    <value>المساحة الحرة</value>
+  </data>
+  <data name="TotalSize" xml:space="preserve">
+    <value>الحجم الكلي</value>
+  </data>
+  <data name="SelectArchive" xml:space="preserve">
+    <value>اختر الأرشيف</value>
+  </data>
+  <data name="ArchiveName" xml:space="preserve">
+    <value>اسم الأرشيف</value>
+  </data>
+  <data name="CreatedAt" xml:space="preserve">
+    <value>تاريخ الإنشاء</value>
+  </data>
+  <data name="EntryCount" xml:space="preserve">
+    <value>عدد الإدخالات</value>
+  </data>
+  <data name="FileSize" xml:space="preserve">
+    <value>حجم الملف</value>
+  </data>
+  <data name="DriveLabel" xml:space="preserve">
+    <value>تسمية محرك الأقراص</value>
+  </data>
+  <data name="LoadArchive" xml:space="preserve">
+    <value>تحميل الأرشيف</value>
+  </data>
+  <data name="DeleteArchive" xml:space="preserve">
+    <value>حذف الأرشيف</value>
+  </data>
+  <data name="ConfirmDelete" xml:space="preserve">
+    <value>هل أنت متأكد من حذف هذا الأرشيف؟</value>
+  </data>
+  <data name="Error" xml:space="preserve">
+    <value>خطأ</value>
+  </data>
+  <data name="Success" xml:space="preserve">
+    <value>نجاح</value>
+  </data>
+  <data name="Warning" xml:space="preserve">
+    <value>تحذير</value>
+  </data>
+  <data name="Information" xml:space="preserve">
+    <value>معلومات</value>
+  </data>
+  <data name="NoArchivesFound" xml:space="preserve">
+    <value>لم يتم العثور على أرشيفات</value>
+  </data>
+  <data name="NoIndexesLoaded" xml:space="preserve">
+    <value>لم يتم تحميل فهارس بعد. انقر على "تحميل من قاعدة البيانات" أو "فهرسة جميع محركات الأقراص" أولاً.</value>
+  </data>
+  <data name="SearchResults" xml:space="preserve">
+    <value>نتائج البحث: {0:N0} عنصر</value>
+  </data>
+  <data name="ShowingFirst" xml:space="preserve">
+    <value>عرض أول {0:N0} من {1:N0}</value>
+  </data>
+  <data name="IndexingCancelled" xml:space="preserve">
+    <value>تم إلغاء الفهرسة</value>
+  </data>
+  <data name="PathCopied" xml:space="preserve">
+    <value>تم نسخ المسار إلى الحافظة</value>
+  </data>
+  <data name="NameCopied" xml:space="preserve">
+    <value>تم نسخ الاسم إلى الحافظة</value>
+  </data>
+  <data name="MigratingIndexes" xml:space="preserve">
+    <value>جاري ترحيل فهارس SQLite إلى التنسيق السريع...</value>
+  </data>
+  <data name="MigrationCompleted" xml:space="preserve">
+    <value>اكتملت الهجرة. أعد تشغيل التطبيق لاستخدام الفهرس السريع.</value>
+  </data>
+  <data name="LoadingIndexes" xml:space="preserve">
+    <value>جاري تحميل الفهارس...</value>
+  </data>
+  <data name="ArchiveLoadCancelled" xml:space="preserve">
+    <value>تم إلغاء تحميل الأرشيف</value>
+  </data>
+</root>

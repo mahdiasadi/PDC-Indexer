@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Data;
 using System.Windows.Input;
@@ -15,6 +17,7 @@ using ProjectIndexer.Core.FileSystem;
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
 using ProjectIndexer.Wpf.Collections;
+using ProjectIndexer.Wpf.Resources;
 
 namespace ProjectIndexer.Wpf.ViewModels;
 
@@ -72,20 +75,111 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private ObservableCollection<DriveInfoViewModel> _allDrives = [];
 
+    [ObservableProperty]
+    private string _selectedLanguage = "en";
+
+    public string[] AvailableLanguages => ["en", "fa", "ar", "tr"];
+
+    public string[] LanguageNames => [Strings.English, Strings.Persian, Strings.Arabic, Strings.Turkish];
+
     public ICollectionView ResultsView { get; }
 
     public MainViewModel()
     {
+        LoadLanguageSetting();
+        Strings.SetCulture(_selectedLanguage);
+        Strings.CultureChanged += OnCultureChanged;
+
         _databaseFolder = ReadDatabaseFolderFromConfig();
         _sharedDatabase = new IndexDatabase(_databaseFolder);
         _archiveManager = new ArchiveManager();
         ResultsView = CollectionViewSource.GetDefaultView(Results);
 
-        try { LoadDrives(); } catch { StatusText = "Error loading drives"; }
+        try { LoadDrives(); } catch { StatusText = Strings.Error + " loading drives"; }
         try { RefreshArchiveInfo(); } catch { }
         
         // Load indexes in background
         _ = Task.Run(LoadIndexesAsync);
+    }
+
+    private void OnCultureChanged()
+    {
+        OnPropertyChanged(nameof(LanguageNames));
+        OnPropertyChanged(nameof(SelectedLanguage));
+        RefreshUIStrings();
+    }
+
+    private void RefreshUIStrings()
+    {
+        if (string.IsNullOrWhiteSpace(SearchText) || SearchText == "Type to search..." || SearchText == "برای جستجو تایپ کنید..." || SearchText == "اكتب للبحث..." || SearchText == "Ara için yazın...")
+        {
+            SearchText = "";
+        }
+        
+        if (StatusText == "Ready" || StatusText == "آماده" || StatusText == "جاهز" || StatusText == "Hazır")
+        {
+            StatusText = Strings.Ready;
+        }
+        
+        RefreshArchiveInfo();
+        
+        if (string.IsNullOrWhiteSpace(SearchText))
+            ShowAllIndexed();
+        else
+            ExecuteSearch(SearchText);
+    }
+
+    private void LoadLanguageSetting()
+    {
+        try
+        {
+            if (File.Exists("appsettings.json"))
+            {
+                string json = File.ReadAllText("appsettings.json");
+                var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("Language", out var langProp))
+                {
+                    _selectedLanguage = langProp.GetString() ?? "en";
+                }
+            }
+        }
+        catch { }
+    }
+
+    partial void OnSelectedLanguageChanged(string value)
+    {
+        Strings.SetCulture(value);
+        SaveLanguageSetting(value);
+    }
+
+    private void SaveLanguageSetting(string culture)
+    {
+        try
+        {
+            string json = "{}";
+            if (File.Exists("appsettings.json"))
+                json = File.ReadAllText("appsettings.json");
+            
+            var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            
+            using var ms = new MemoryStream();
+            using var writer = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true });
+            writer.WriteStartObject();
+            
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (prop.Name != "Language")
+                    prop.WriteTo(writer);
+            }
+            
+            writer.WriteString("Language", culture);
+            writer.WriteEndObject();
+            writer.Flush();
+            
+            File.WriteAllText("appsettings.json", Encoding.UTF8.GetString(ms.ToArray()));
+        }
+        catch { }
     }
 
     private static string ReadDatabaseFolderFromConfig()
@@ -141,7 +235,12 @@ public partial class MainViewModel : ObservableObject
                     var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
                     var engine = new IndexEngine(provider, _sharedDatabase);
 
-                    if (engine.LoadFromFastIndex())
+                    var progress = new Progress<string>(msg =>
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() => StatusText = msg);
+                    });
+
+                    if (await engine.LoadFromFastIndexAsync(progress))
                     {
                         _engines[drive.DriveLetter] = engine;
                         await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
@@ -265,7 +364,7 @@ public partial class MainViewModel : ObservableObject
         // Allow searching partially built indexes while a drive is being indexed.
         if (!_engines.Values.Any(e => e.IsIndexed || e.EntryCount > 0))
         {
-            StatusText = "No indexes loaded yet. Click 'Load From Database' or 'Index All Drives' first.";
+            StatusText = Strings.NoIndexesLoaded;
             return;
         }
 
@@ -407,7 +506,7 @@ public partial class MainViewModel : ObservableObject
 
                     System.Windows.Application.Current.Dispatcher.Invoke(() =>
                     {
-                        StatusText = "Archive creation completed";
+                        StatusText = Strings.Get("ArchiveLoaded", engine.EntryCount);
                     });
 
                     RefreshArchiveInfo();
@@ -447,7 +546,7 @@ public partial class MainViewModel : ObservableObject
     private void CancelIndexing()
     {
         _indexCts?.Cancel();
-        StatusText = "Indexing cancelled";
+        StatusText = Strings.IndexingCancelled;
     }
 
     [RelayCommand]
@@ -488,7 +587,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             System.Windows.Clipboard.SetText(SelectedEntry.FullPath);
-            StatusText = "Path copied to clipboard";
+            StatusText = Strings.PathCopied;
         }
         catch { }
     }
@@ -500,7 +599,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             System.Windows.Clipboard.SetText(SelectedEntry.Name);
-            StatusText = "Name copied to clipboard";
+            StatusText = Strings.NameCopied;
         }
         catch { }
     }
@@ -512,7 +611,7 @@ public partial class MainViewModel : ObservableObject
 
         _indexCts = new CancellationTokenSource();
         IsIndexing = true;
-        StatusText = "Migrating SQLite indexes to fast format...";
+        StatusText = Strings.MigratingIndexes;
 
         try
         {
@@ -522,7 +621,7 @@ public partial class MainViewModel : ObservableObject
                 FastIndexMigrator.MigrateArchives();
             }, _indexCts.Token);
 
-            StatusText = "Migration completed. Restart app to use fast indexes.";
+            StatusText = Strings.MigrationCompleted;
         }
         catch (Exception ex)
         {
@@ -540,30 +639,32 @@ public partial class MainViewModel : ObservableObject
         if (IsIndexing) return;
         
         IsIndexing = true;
-        StatusText = "Loading indexes...";
+        StatusText = Strings.LoadingIndexes;
 
-        await Task.Run(() =>
+        var progress = new Progress<string>(msg =>
         {
-            foreach (var drive in Drives)
-            {
-                try
-                {
-                    var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
-                    var engine = new IndexEngine(provider, _sharedDatabase);
-
-                    if (engine.LoadFromFastIndex())
-                    {
-                        _engines[drive.DriveLetter] = engine;
-                    }
-                    else if (engine.LoadFromDatabase())
-                    {
-                        _engines[drive.DriveLetter] = engine;
-                        engine.SaveToDatabase();
-                    }
-                }
-                catch { }
-            }
+            System.Windows.Application.Current.Dispatcher.Invoke(() => StatusText = msg);
         });
+
+        foreach (var drive in Drives)
+        {
+            try
+            {
+                var provider = FileSystemFactory.CreateProvider(drive.DriveLetter);
+                var engine = new IndexEngine(provider, _sharedDatabase);
+
+                if (await engine.LoadFromFastIndexAsync(progress))
+                {
+                    _engines[drive.DriveLetter] = engine;
+                }
+                else if (await engine.LoadFromDatabaseAsync(progress))
+                {
+                    _engines[drive.DriveLetter] = engine;
+                    await Task.Run(() => engine.SaveToDatabase());
+                }
+            }
+            catch { }
+        }
 
         TotalFiles = _engines.Values.Sum(e => e.EntryCount);
         TotalDirectories = _engines.Values.Sum(e => e.MemoryIndex.Filter(f => f.IsDirectory).Count());
@@ -612,7 +713,7 @@ public partial class MainViewModel : ObservableObject
         var archives = _archiveManager.ListArchives();
         if (archives.Count == 0)
         {
-            StatusText = "No archives found";
+            StatusText = Strings.NoArchivesFound;
             return;
         }
 
@@ -640,8 +741,15 @@ public partial class MainViewModel : ObservableObject
         return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
     }
 
-    private void LoadArchiveEntries(ArchiveInfo archive)
+    private CancellationTokenSource? _archiveLoadCts;
+
+    [RelayCommand]
+    private async Task LoadArchiveEntriesAsync(ArchiveInfo archive)
     {
+        _archiveLoadCts?.Cancel();
+        _archiveLoadCts = new CancellationTokenSource();
+        var cts = _archiveLoadCts.Token;
+
         try
         {
             var loadProgress = new Progress<string>(msg =>
@@ -649,26 +757,46 @@ public partial class MainViewModel : ObservableObject
                 System.Windows.Application.Current.Dispatcher.Invoke(() => StatusText = msg);
             });
 
-            var entries = _archiveManager.LoadArchive(archive.FilePath, loadProgress);
+            var entries = await _archiveManager.LoadArchiveAsync(archive.FilePath, loadProgress, cts);
+            
+            if (cts.IsCancellationRequested) return;
+
             _loadedArchiveEntries.AddRange(entries);
 
-            var vms = new List<FileEntryViewModel>(entries.Count);
-            foreach (var entry in entries)
+            // Show results in batches to keep UI responsive
+            const int batchSize = 5000;
+            var vms = new List<FileEntryViewModel>(Math.Min(batchSize, entries.Count));
+            
+            for (int i = 0; i < Math.Min(batchSize, entries.Count); i++)
             {
-                var vm = FileEntryViewModel.FromEntry(entry);
+                if (cts.IsCancellationRequested) break;
+                var vm = FileEntryViewModel.FromEntry(entries[i]);
                 vm.Source = $"Archive: {archive.DisplayName}";
                 vms.Add(vm);
             }
-            Results.ReplaceAll(vms);
+
+            await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+            {
+                Results.ReplaceAll(vms);
+            });
 
             TotalFiles += entries.Count(e => !e.IsDirectory);
             TotalDirectories += entries.Count(e => e.IsDirectory);
-            StatusText = $"Loaded {entries.Count:N0} entries from archive {archive.DisplayName} — completed";
+            StatusText = $"Loaded {entries.Count:N0} entries from archive {archive.DisplayName} — showing first {vms.Count:N0}";
         }
+catch (OperationCanceledException)
+            {
+                StatusText = Strings.IndexingCancelled;
+            }
         catch (Exception ex)
         {
             StatusText = $"Error loading archive: {ex.Message}";
         }
+    }
+
+    private void LoadArchiveEntries(ArchiveInfo archive)
+    {
+        _ = LoadArchiveEntriesAsync(archive);
     }
 
     [RelayCommand]

@@ -98,6 +98,17 @@ public class ArchiveManager
 
         return archives.OrderByDescending(a => a.CreatedAt).ToList();
     }
+    
+    public async Task<List<FileEntry>> LoadArchiveAsync(string archiveBasePath, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+    {
+        progress?.Report("Loading archive...");
+        
+        var fastIndex = GetOrCreateFastIndex(archiveBasePath);
+        var entries = await Task.Run(() => fastIndex.LoadAllLazy(), cancellationToken);
+        
+        progress?.Report($"Loaded {entries.Count:N0} entries from archive");
+        return entries;
+    }
 
     public List<FileEntry> LoadArchive(string archiveBasePath)
     {
