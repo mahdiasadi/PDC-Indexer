@@ -4,14 +4,7 @@ using ProjectIndexer.Core.Database;
 using ProjectIndexer.Core.FileSystem;
 using ProjectIndexer.Core.Indexing;
 
-class ProgressLogger : IProgress<IndexProgress>
-{
-    private readonly Stopwatch _sw = Stopwatch.StartNew();
-    public void Report(IndexProgress value)
-    {
-        Console.WriteLine($"  [{_sw.Elapsed.TotalSeconds:F1}s] {value}");
-    }
-}
+
 
 Console.WriteLine("=== ENGINE PIPELINE BENCH (C:) ===");
 
@@ -37,3 +30,11 @@ Console.WriteLine($"Search 'notepad' returned {r.Count} in {sw.ElapsedMillisecon
 
 try { Directory.Delete(dbPath, true); } catch { }
 Console.WriteLine("ALL DONE");
+class ProgressLogger : IProgress<IndexProgress>
+{
+    private readonly Stopwatch _sw = Stopwatch.StartNew();
+    public void Report(IndexProgress value)
+    {
+        Console.WriteLine($"  [{_sw.Elapsed.TotalSeconds:F1}s] {value}");
+    }
+}
