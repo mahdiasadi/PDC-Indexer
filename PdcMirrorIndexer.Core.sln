@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.9.34622.214
+# Visual Studio Version 18
+VisualStudioVersion = 18.9.12120.119 stable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "PdcMirrorIndexer.Core", "PdcMirrorIndexer.Core\PdcMirrorIndexer.Core.csproj", "{EB79454B-9523-4DA0-AAAB-C53A808DCA50}"
 EndProject
