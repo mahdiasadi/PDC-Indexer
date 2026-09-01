@@ -16,8 +16,6 @@ public class IndexEngine
     private readonly SearchEngine _searchEngine;
     private bool _isIndexed;
     private bool _isBuilding;
-    private int _entryCountSinceLastSave;
-    private int _entryCountSinceFastIndexSave;
     private readonly string _fastIndexPath;
 
     public IFileSystemProvider Provider => _provider;
@@ -27,9 +25,6 @@ public class IndexEngine
     public bool IsIndexed => _isIndexed;
     public int EntryCount => _fastIndex.Count;
     public Action<FileEntry>? OnEntryIndexed { get; set; }
-
-    private const int SaveBatchSize = 50000;
-    private const int FastIndexSaveInterval = 1000000; // Save fast index to disk only at the end of a full build
 
     public IndexEngine(IFileSystemProvider provider, IndexDatabase? database = null, string? fastIndexPath = null)
     {
@@ -198,19 +193,12 @@ public class IndexEngine
         {
             _fastIndex.Clear();
             _memoryIndex.Clear();
-            _entryCountSinceLastSave = 0;
-            _entryCountSinceFastIndexSave = 0;
 
             using var dbConn = _database.OpenConnection();
             using var dbTxn = dbConn.BeginTransaction();
 
             _database.ClearDriveIndex(dbConn, DriveLetter);
 
-            var entryBuffer = new List<FileEntry>();
-            var fastIndexBuffer = new List<FileEntry>();
-            bool providerStreamsEntries = false;
-
-            // Create a progress wrapper that forwards provider progress with our drive letter
             var engineProgress = new Progress<IndexProgress>(p =>
             {
                 p.DriveLetter = DriveLetter.ToString();
@@ -219,63 +207,26 @@ public class IndexEngine
 
             _provider.OnEntryIndexed = entry =>
             {
-                if (folderPath != null && !entry.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
+                if (folderPath != null && !string.IsNullOrEmpty(entry.FullPath) && !entry.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase))
                     return;
 
-                providerStreamsEntries = true;
-                entryBuffer.Add(entry);
-                fastIndexBuffer.Add(entry);
                 OnEntryIndexed?.Invoke(entry);
-
-                _entryCountSinceLastSave++;
-                _entryCountSinceFastIndexSave++;
-
-                if (_entryCountSinceLastSave >= SaveBatchSize)
-                {
-                    _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
-                    _fastIndex.AddRange(fastIndexBuffer);
-                    entryBuffer.Clear();
-                    fastIndexBuffer.Clear();
-                    _entryCountSinceLastSave = 0;
-                }
-
-                // Periodically persist fast index to disk (crash recovery)
-                if (_entryCountSinceFastIndexSave >= FastIndexSaveInterval)
-                {
-                    _fastIndex.Save();
-                    _entryCountSinceFastIndexSave = 0;
-                }
             };
 
             var entries = _provider.EnumerateFiles(engineProgress);
             List<FileEntry> filteredEntries = folderPath != null
-                ? entries.Where(e => e.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase)).ToList()
-                : entries;
+                ? entries.Where(e => !string.IsNullOrEmpty(e.FullPath) && e.FullPath.StartsWith(folderPath, StringComparison.OrdinalIgnoreCase)).ToList()
+                : entries.Where(e => !string.IsNullOrEmpty(e.FullPath)).ToList();
 
-            // Flush remaining buffered entries that were streamed via the callback.
-            if (fastIndexBuffer.Count > 0)
-            {
-                _fastIndex.AddRange(fastIndexBuffer);
-                fastIndexBuffer.Clear();
-            }
+            _fastIndex.AddRange(filteredEntries);
+            _memoryIndex.AddRange(filteredEntries);
 
-            // If the provider did not stream entries through OnEntryIndexed
-            // (e.g. mock providers), add the returned entries once here.
-            if (!providerStreamsEntries)
-                _fastIndex.AddRange(filteredEntries);
+            _database.AppendBatch(dbConn, filteredEntries, DriveLetter);
 
             _fastIndex.Save();
-            _memoryIndex.AddRange(filteredEntries);
             _isIndexed = true;
 
             _provider.OnEntryIndexed = null;
-
-            if (entryBuffer.Count > 0)
-            {
-                _database.AppendBatch(dbConn, entryBuffer, DriveLetter);
-                entryBuffer.Clear();
-                _entryCountSinceLastSave = 0;
-            }
 
             _database.SetMetadata(dbConn, $"LastIndexTime_{DriveLetter}", DateTime.UtcNow.ToString("O"));
 

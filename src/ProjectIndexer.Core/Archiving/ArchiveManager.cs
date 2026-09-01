@@ -1,6 +1,7 @@
 using ProjectIndexer.Core.Indexing;
 using ProjectIndexer.Core.Models;
 using ProjectIndexer.Core.Searching;
+using System.IO;
 
 namespace ProjectIndexer.Core.Archiving;
 
@@ -23,7 +24,7 @@ public class ArchiveManager
         _searchEngine = sharedIndex != null ? new SearchEngine(sharedIndex) : null!;
     }
 
-    public string CreateArchive(char driveLetter, IEnumerable<FileEntry> entries, string? volumeSerial = null)
+    public string CreateArchive(char driveLetter, IEnumerable<FileEntry> entries, string? volumeSerial = null, IProgress<string>? progress = null)
     {
         driveLetter = char.ToUpperInvariant(driveLetter);
         volumeSerial ??= GetVolumeSerial(driveLetter);
@@ -32,6 +33,8 @@ public class ArchiveManager
         string archivePath = Path.Combine(_archiveFolder, archiveName);
 
         var entryList = entries.ToList();
+        progress?.Report($"Creating archive ({entryList.Count:N0} entries)...");
+        
         var fastIndex = new FastArchiveIndex(archivePath);
         fastIndex.SaveArchive(entryList, driveLetter);
 
@@ -40,7 +43,17 @@ public class ArchiveManager
             _archiveCache[archivePath] = fastIndex;
         }
 
+        progress?.Report($"Archive created: {archiveName}");
         return archivePath;
+    }
+
+    public List<FileEntry> LoadArchive(string archiveBasePath, IProgress<string>? progress = null)
+    {
+        progress?.Report("Loading archive...");
+        var fastIndex = GetOrCreateFastIndex(archiveBasePath);
+        var entries = fastIndex.LoadAllLazy(); // Use lazy loading for better performance
+        progress?.Report($"Loaded {entries.Count:N0} entries from archive");
+        return entries;
     }
 
     public List<ArchiveInfo> ListArchives(char? driveLetter = null)
@@ -89,7 +102,7 @@ public class ArchiveManager
     public List<FileEntry> LoadArchive(string archiveBasePath)
     {
         var fastIndex = GetOrCreateFastIndex(archiveBasePath);
-        return fastIndex.LoadAll();
+        return fastIndex.LoadAllLazy();
     }
 
     public List<FileEntry> SearchArchive(string archiveBasePath, string query)

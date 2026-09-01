@@ -405,7 +405,20 @@ public sealed class FastIndex : IDisposable
         _nameIndex.Clear();
         _pathIndex.Clear();
         _frnIndex.Clear();
-        
+        // Read dictionary
+        using var dictStream = new FileStream(_dictPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var dictReader = new BinaryReader(dictStream, System.Text.Encoding.UTF8, true);
+
+        _dictCount = dictReader.ReadInt32();
+        _dictEntries.Clear();
+        _pathDict.Clear();
+
+        for (int i = 0; i < _dictCount; i++)
+        {
+            string path = dictReader.ReadString();
+            _dictEntries.Add(path);
+            _pathDict[path] = i;
+        }
         for (int i = 0; i < _entryCount; i++)
         {
             ulong frn = indexReader.ReadUInt64();
@@ -443,27 +456,14 @@ public sealed class FastIndex : IDisposable
                 IsArchive = isArchive,
                 IsTemporary = isTemporary,
                 DriveLetter = driveLetter,
-                FullPath = fullPath,
+                FullPath = fullPath,Name=fullPath,
             };
             
             _entries.Add(entry);
             BuildInMemoryIndexes(i, entry, pathId);
         }
         
-        // Read dictionary
-        using var dictStream = new FileStream(_dictPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        using var dictReader = new BinaryReader(dictStream, System.Text.Encoding.UTF8, true);
-        
-        _dictCount = dictReader.ReadInt32();
-        _dictEntries.Clear();
-        _pathDict.Clear();
-        
-        for (int i = 0; i < _dictCount; i++)
-        {
-            string path = dictReader.ReadString();
-            _dictEntries.Add(path);
-            _pathDict[path] = i;
-        }
+    
         
         // Read n-gram entries
         using var ngramStream = new FileStream(_ngramPath, FileMode.Open, FileAccess.Read, FileShare.Read);

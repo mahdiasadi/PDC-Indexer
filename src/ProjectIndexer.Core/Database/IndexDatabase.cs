@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using ProjectIndexer.Core.Models;
+using System.Data;
 using System.IO.Compression;
 using System.Text;
 
@@ -156,6 +157,7 @@ public class IndexDatabase : IDisposable
         var conn = GetConnection();
         try
         {
+            if (conn.State != ConnectionState.Open) conn.Open();
             using var transaction = conn.BeginTransaction();
 
             using var deleteCmd = conn.CreateCommand();
@@ -226,10 +228,12 @@ public class IndexDatabase : IDisposable
             metaCmd.ExecuteNonQuery();
 
             transaction.Commit();
+
         }
         finally
         {
             ReleaseConnection();
+            conn.Open();
         }
     }
 

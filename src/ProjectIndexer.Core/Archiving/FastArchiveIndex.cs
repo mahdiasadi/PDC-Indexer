@@ -326,6 +326,26 @@ public sealed class FastArchiveIndex : IDisposable
         }
     }
 
+    public List<FileEntry> LoadAllLazy()
+    {
+        lock (_lock)
+        {
+            return _entries;
+        }
+    }
+
+    public List<FileEntry> LoadAllRaw()
+    {
+        lock (_lock)
+        {
+            if (_entries.Count > 0)
+                return _entries;
+
+            ReadFiles();
+            return _entries;
+        }
+    }
+
     public void Save()
     {
         if (!_dirty || _disposed) return;
@@ -402,6 +422,22 @@ public sealed class FastArchiveIndex : IDisposable
 
     private void ReadFiles()
     {
+        // Read dictionary FIRST (needed to resolve paths in entries)
+        using var dictStream = new FileStream(_basePath + ".dict", FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var dictReader = new BinaryReader(dictStream, System.Text.Encoding.UTF8, true);
+        
+        _dictCount = dictReader.ReadInt32();
+        _dictEntries.Clear();
+        _dictEntries.Capacity = _dictCount;
+        _pathDict.Clear();
+        
+        for (int i = 0; i < _dictCount; i++)
+        {
+            string path = dictReader.ReadString();
+            _dictEntries.Add(path);
+            _pathDict[path] = i;
+        }
+        
         // Read index file
         using var indexStream = new FileStream(_basePath + ".idx", FileMode.Open, FileAccess.Read, FileShare.Read);
         using var indexReader = new BinaryReader(indexStream);
@@ -412,7 +448,7 @@ public sealed class FastArchiveIndex : IDisposable
         
         indexReader.ReadUInt16(); // version
         _entryCount = indexReader.ReadInt32();
-        _dictCount = indexReader.ReadInt32();
+        indexReader.ReadInt32(); // dictCount (already read)
         _ngramCount = indexReader.ReadInt64();
         indexReader.ReadInt64(); // timestamp
         
@@ -463,21 +499,6 @@ public sealed class FastArchiveIndex : IDisposable
             
             _entries.Add(entry);
             BuildInMemoryIndexes(i, entry, pathId);
-        }
-        
-        // Read dictionary
-        using var dictStream = new FileStream(_basePath + ".dict", FileMode.Open, FileAccess.Read, FileShare.Read);
-        using var dictReader = new BinaryReader(dictStream, System.Text.Encoding.UTF8, true);
-        
-        _dictCount = dictReader.ReadInt32();
-        _dictEntries.Clear();
-        _pathDict.Clear();
-        
-        for (int i = 0; i < _dictCount; i++)
-        {
-            string path = dictReader.ReadString();
-            _dictEntries.Add(path);
-            _pathDict[path] = i;
         }
         
         // Read n-gram entries

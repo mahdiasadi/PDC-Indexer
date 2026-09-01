@@ -393,15 +393,21 @@ public partial class MainViewModel : ObservableObject
                     TotalDirectories = _engines.Values.Sum(e => e.MemoryIndex.Filter(f => f.IsDirectory).Count());
                     StatusText = $"Indexed {drive.DriveLetter}:\\ — {engine.EntryCount:N0} entries, saving database & archive...";
 
+                    var archiveProgress = new Progress<string>(msg =>
+                    {
+                        System.Windows.Application.Current.Dispatcher.Invoke(() => StatusText = msg);
+                    });
+
                     await Task.Run(() =>
                     {
                         engine.SaveToDatabase();
                         var archivePath = _archiveManager.CreateArchive(
-                            drive.DriveLetter, engine.MemoryIndex.Entries);
-                        System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                        {
-                            StatusText = $"Archive saved: {Path.GetFileName(archivePath)}";
-                        });
+                            drive.DriveLetter, engine.MemoryIndex.Entries, null, archiveProgress);
+                    });
+
+                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        StatusText = "Archive creation completed";
                     });
 
                     RefreshArchiveInfo();
@@ -638,7 +644,12 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
-            var entries = _archiveManager.LoadArchive(archive.FilePath);
+            var loadProgress = new Progress<string>(msg =>
+            {
+                System.Windows.Application.Current.Dispatcher.Invoke(() => StatusText = msg);
+            });
+
+            var entries = _archiveManager.LoadArchive(archive.FilePath, loadProgress);
             _loadedArchiveEntries.AddRange(entries);
 
             var vms = new List<FileEntryViewModel>(entries.Count);
@@ -652,7 +663,7 @@ public partial class MainViewModel : ObservableObject
 
             TotalFiles += entries.Count(e => !e.IsDirectory);
             TotalDirectories += entries.Count(e => e.IsDirectory);
-            StatusText = $"Loaded {entries.Count:N0} entries from archive {archive.DisplayName}";
+            StatusText = $"Loaded {entries.Count:N0} entries from archive {archive.DisplayName} — completed";
         }
         catch (Exception ex)
         {
